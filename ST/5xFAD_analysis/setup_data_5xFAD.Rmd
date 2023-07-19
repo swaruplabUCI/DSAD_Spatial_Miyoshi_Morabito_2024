@@ -1,0 +1,324 @@
+
+# Load libraries and visium samples
+
+```{r eval=FALSE}
+
+# conda activate cicero
+library(Seurat)
+library(harmony)
+library(tidyverse)
+library(cowplot)
+library(patchwork)
+library(RColorBrewer)
+colfunc <- colorRampPalette(rev(brewer.pal(11, 'Spectral' )))
+theme_set(theme_cowplot())
+
+setwd("/dfs7/swaruplab/smorabit/analysis/ADDS_2021/visium/5xFAD")
+
+fig_dir <- "figures/"
+data_dir <- "data/"
+
+
+umap_theme <- theme(
+  axis.line=element_blank(),
+  axis.text.x=element_blank(),
+  axis.text.y=element_blank(),
+  axis.ticks=element_blank(),
+  axis.title.x=element_blank(),
+  axis.title.y=element_blank(),
+  panel.background=element_blank(),
+  panel.border=element_blank(),
+  panel.grid.major=element_blank(),
+  panel.grid.minor=element_blank(),
+  plot.background=element_blank()
+)
+
+```
+
+```{r eval=FALSE}
+
+################################################################################
+# pilot batch:
+################################################################################
+
+
+spaceranger_outdir <- '/dfs7/swaruplab/smorabit/data/Visium_Mouse_2021/5xFAD_pilot_2021/spaceranger_count/'
+spaceranger_samples <- dir(spaceranger_outdir)
+
+seurat_list <- list()
+for(sample in spaceranger_samples){
+
+  print(sample)
+  cur <- Seurat::Load10X_Spatial(paste0(spaceranger_outdir, sample, '/outs/'))
+  cur$SampleID <- sample
+  seurat_list[[sample]] <- cur
+}
+
+# merge into one seurat obj:
+seurat_obj <- merge(seurat_list[[1]], seurat_list[2:length(seurat_list)])
+rm(seurat_list); gc();
+
+# add metadata:
+meta_file <- "/dfs7/swaruplab/smorabit/analysis/5XFAD_visium_2021/pilot/data/pilot_samples.csv"
+sample_meta <- read.csv(meta_file, stringsAsFactors=FALSE)
+
+# add to seurat obj
+ix <- match( seurat_obj$SampleID, sample_meta$SAMPLE)
+sample_meta <- sample_meta[ix,]
+
+# add to seurat obj
+seurat_obj@meta.data <- cbind(seurat_obj@meta.data, sample_meta)
+
+# add seq batch:
+seurat_obj$seqbatch <- 'Pilot_2021'
+colnames(seurat_obj@meta.data)
+
+# temp
+seurat_b0 <- seurat_obj
+print(length(unique(seurat_obj$SAMPLE)))
+
+################################################################################
+# July batch:
+################################################################################
+
+spaceranger_outdir <- '/dfs7/swaruplab/smorabit/data/Visium_Mouse_2021/July_2021/spaceranger_count/'
+spaceranger_samples <- dir(spaceranger_outdir)
+
+seurat_list <- list()
+for(sample in spaceranger_samples){
+
+  print(sample)
+  cur <- Seurat::Load10X_Spatial(paste0(spaceranger_outdir, sample, '/outs/'))
+  cur$SampleID <- sample
+  seurat_list[[sample]] <- cur
+}
+
+# merge into one seurat obj:
+seurat_obj <- merge(seurat_list[[1]], seurat_list[2:length(seurat_list)])
+rm(seurat_list); gc();
+
+# add metadata:
+meta_file <- "/dfs7/swaruplab/smorabit/data/Visium_Mouse_2021/July_2021/5XFAD_8samples.csv"
+
+sample_meta <- read.csv(meta_file, stringsAsFactors=FALSE)
+sample_meta$LibraryID <- paste0('Visium', sample_meta$X)
+head(sample_meta)
+
+# remove columns we don't need
+sample_meta <- sample_meta %>% select(-c(X, Amp.Cycles, Qubit.Concentration, Av.Library.bp, Initial.nM, Sample..ul., H2O..ul.))
+
+# add to seurat obj
+ix <- match( seurat_obj$SampleID, sample_meta$LibraryID)
+sample_meta <- sample_meta[ix,] %>% select(-c(LibraryID))
+
+# add to seurat obj
+seurat_obj@meta.data <- cbind(seurat_obj@meta.data, sample_meta)
+
+# add seq batch:
+seurat_obj$seqbatch <- 'July_2021'
+colnames(seurat_obj@meta.data)
+
+# temp
+seurat_b1 <- seurat_obj
+print(length(unique(seurat_obj$SAMPLE)))
+
+################################################################################
+# Nov 15 batch:
+################################################################################
+
+spaceranger_outdir <- '/dfs7/swaruplab/smorabit/data/Visium_Mouse_2021/Nov_15_2021/spaceranger_count/'
+spaceranger_samples <- dir(spaceranger_outdir)
+
+seurat_list <- list()
+for(sample in spaceranger_samples){
+
+  print(sample)
+  cur <- Seurat::Load10X_Spatial(paste0(spaceranger_outdir, sample, '/outs/'))
+  cur$SampleID <- sample
+  seurat_list[[sample]] <- cur
+}
+
+# merge into one seurat obj:
+seurat_obj <- merge(seurat_list[[1]], seurat_list[2:length(seurat_list)])
+rm(seurat_list); gc();
+
+# add metadata:
+meta_file <- "/dfs7/swaruplab/smorabit/data/Visium_Mouse_2021/Nov_15_2021/visium_5xFAD_11-15-21_sample_meta.csv"
+
+sample_meta <- read.csv(meta_file, stringsAsFactors=FALSE)
+sample_meta$SampleID <- paste0("Visium5xFAD_", sample_meta$SAMPLE_num)
+
+sample_meta <- sample_meta %>% select(-c(Amp.Cycles, Qubit.Concentration, Av.Library.bp, Initial.nM, Sample..ul., H2O..ul., SAMPLE_num))
+
+ix <- match( seurat_obj$SampleID, sample_meta$SampleID)
+sample_meta <- sample_meta[ix,] %>% select(-c(SampleID))
+seurat_obj@meta.data <- cbind(seurat_obj@meta.data, sample_meta)
+
+# add seq batch:
+seurat_obj$seqbatch <- 'Nov_15_2021'
+
+# temp
+seurat_b2 <- seurat_obj
+print(length(unique(seurat_obj$SAMPLE)))
+
+################################################################################
+# Nov 24 batch:
+################################################################################
+
+spaceranger_outdir <- '/dfs7/swaruplab/smorabit/data/Visium_Mouse_2021/Nov_24_2021/spaceranger_count/'
+spaceranger_samples <- dir(spaceranger_outdir)
+
+seurat_list <- list()
+for(sample in spaceranger_samples){
+
+  print(sample)
+  cur <- Seurat::Load10X_Spatial(paste0(spaceranger_outdir, sample, '/outs/'))
+  cur$SampleID <- sample
+  seurat_list[[sample]] <- cur
+}
+
+# merge into one seurat obj:
+seurat_obj <- merge(seurat_list[[1]], seurat_list[2:length(seurat_list)])
+rm(seurat_list); gc();
+
+# add metadata:
+meta_file <- "/dfs7/swaruplab/smorabit/data/Visium_Mouse_2021/Nov_24_2021/visium_5xFAD_11-24-21_sample_meta.csv"
+
+sample_meta <- read.csv(meta_file, stringsAsFactors=FALSE)
+
+sample_meta <- sample_meta %>% select(-c(Amp.Cycles, Qubit.Concentration, Av.Library.bp, Initial.nM, Sample..ul., H2O..ul.))
+
+ix <- match( seurat_obj$SampleID, sample_meta$LibraryName)
+sample_meta <- sample_meta[ix,] %>% select(-c(LibraryName))
+
+# add to seurat obj
+seurat_obj@meta.data <- cbind(seurat_obj@meta.data, sample_meta)
+
+# add seq batch:
+seurat_obj$seqbatch <- 'Nov_24_2021'
+
+# temp
+seurat_b3 <- seurat_obj
+print(length(unique(seurat_obj$SAMPLE)))
+
+################################################################################
+# Dec 13 batch:
+################################################################################
+
+spaceranger_outdir <- '/dfs7/swaruplab/smorabit/data/Visium_Mouse_2021/Dec_13_2021/spaceranger_count/'
+spaceranger_samples <- dir(spaceranger_outdir)
+
+seurat_list <- list()
+for(sample in spaceranger_samples){
+
+  print(sample)
+  cur <- Seurat::Load10X_Spatial(paste0(spaceranger_outdir, sample, '/outs/'))
+  cur$SampleID <- sample
+  seurat_list[[sample]] <- cur
+}
+
+# merge into one seurat obj:
+seurat_obj <- merge(seurat_list[[1]], seurat_list[2:length(seurat_list)])
+rm(seurat_list); gc();
+
+# add metadata:
+meta_file <- "/dfs7/swaruplab/smorabit/data/Visium_Mouse_2021/Dec_13_2021/visium_5xFAD_12-13-21_sample_meta.csv"
+
+sample_meta <- read.csv(meta_file, stringsAsFactors=FALSE)
+sample_meta$LibraryName <- paste0('5XFAD', sample_meta$LibraryName)
+head(sample_meta)
+
+# remove columns we don't need
+sample_meta <- sample_meta %>% select(-c(Amp.Cycles, Qubit.Concentration, Av.Library.bp, Initial.nM, Sample..ul., H2O..ul.))
+
+# add to seurat obj
+ix <- match( seurat_obj$SampleID, sample_meta$LibraryName)
+sample_meta <- sample_meta[ix,] %>% select(-c(LibraryName))
+
+# add to seurat obj
+seurat_obj@meta.data <- cbind(seurat_obj@meta.data, sample_meta)
+
+# add seq batch:
+seurat_obj$seqbatch <- 'Dec_13_2021'
+colnames(seurat_obj@meta.data)
+
+# temp
+seurat_b4 <- seurat_obj
+print(length(unique(seurat_obj$SAMPLE)))
+
+
+################################################################################
+# Dec 20 batch:
+################################################################################
+
+
+spaceranger_outdir <- '/dfs7/swaruplab/smorabit/data/Visium_Mouse_2021/Dec_20_2021/spaceranger_count/'
+spaceranger_samples <- dir(spaceranger_outdir)
+
+seurat_list <- list()
+for(sample in spaceranger_samples){
+
+  print(sample)
+  cur <- Seurat::Load10X_Spatial(paste0(spaceranger_outdir, sample, '/outs/'))
+  cur$SampleID <- sample
+  seurat_list[[sample]] <- cur
+}
+
+# merge into one seurat obj:
+seurat_obj <- merge(seurat_list[[1]], seurat_list[2:length(seurat_list)])
+rm(seurat_list); gc();
+
+# add metadata:
+meta_file <- "/dfs7/swaruplab/smorabit/data/Visium_Mouse_2021/Dec_20_2021/visium_5xFAD_12-20-21_sample_meta.csv"
+
+sample_meta <- read.csv(meta_file, stringsAsFactors=FALSE)
+head(sample_meta)
+
+# remove columns we don't need
+sample_meta <- sample_meta %>% select(-c(Amp.Cycles, Qubit.Concentration, Av.Library.bp, Initial.nM, Sample..ul., H2O..ul.))
+
+# add to seurat obj
+ix <- match( seurat_obj$SampleID, sample_meta$LibraryName)
+sample_meta <- sample_meta[ix,] %>% select(-c(LibraryName))
+
+# add to seurat obj
+seurat_obj@meta.data <- cbind(seurat_obj@meta.data, sample_meta)
+
+# add seq batch:
+seurat_obj$seqbatch <- 'Dec_20_2021'
+colnames(seurat_obj@meta.data)
+
+# temp
+seurat_b5 <- seurat_obj
+print(length(unique(seurat_obj$SAMPLE)))
+
+################################################################################
+# merge all 6 batches:
+################################################################################
+
+# remove the ID and SampleID columns
+seurat_b1@meta.data <- seurat_b1@meta.data %>% select(-c(SampleID))
+seurat_b2@meta.data <- seurat_b2@meta.data %>% select(-c(ID, SampleID))
+seurat_b3@meta.data <- seurat_b3@meta.data %>% select(-c(ID, SampleID))
+seurat_b4@meta.data <- seurat_b4@meta.data %>% select(-c(ID, SampleID))
+seurat_b5@meta.data <- seurat_b5@meta.data %>% select(-c(ID, SampleID))
+
+# re-order all metadata:
+meta_cols <- colnames(seurat_b1@meta.data)
+seurat_b2@meta.data <- seurat_b2@meta.data[,meta_cols]
+seurat_b3@meta.data <- seurat_b3@meta.data[,meta_cols]
+seurat_b4@meta.data <- seurat_b4@meta.data[,meta_cols]
+seurat_b5@meta.data <- seurat_b5@meta.data[,meta_cols]
+
+# add the missing columns with NA's for the pilot batch:
+
+# combine seurat objects:
+seurat_obj <- merge(seurat_b0, list(seurat_b1, seurat_b2, seurat_b3, seurat_b4, seurat_b5))
+
+# remove the individual objects:
+rm(seurat_b0, seurat_b1, seurat_b2, seurat_b3, seurat_b4, seurat_b5); gc();
+
+# save the unprocessed data:
+saveRDS(seurat_obj, file=paste0(data_dir, '5xFAD_visium_unprocessed.rds'))
+
+```

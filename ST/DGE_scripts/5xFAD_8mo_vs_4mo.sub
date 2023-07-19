@@ -1,0 +1,52 @@
+#!/bin/bash
+#SBATCH --job-name=FindMarkers
+#SBATCH -p standard
+#SBATCH -A vswarup_lab
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=16
+#SBATCH --error=slurm-%J.err
+#SBATCH --mem 128G
+#SBATCH --array=1-18
+#SBATCH --time=8:00:00
+
+source ~/.bashrc
+conda activate cicero
+
+# seurat object path:
+seurat="/dfs3b/swaruplab/smorabit/analysis/ADDS_2021/visium/5xFAD/July_2021/data/5XFAD_seurat_processed.rds"
+outdir="/dfs3b/swaruplab/smorabit/analysis/ADDS_2021/visium/5xFAD/July_2021/DEGs/data"
+type="conditions"
+condition="Condition.Age"
+cluster="seurat_clusters"
+latent="nCount_Spatial"
+
+mkdir $outdir
+
+################################################################################
+# 5xFAD 8mo vs 4mo
+################################################################################
+
+name="5XFAD_8mo_vs_4mo"
+group1="5X_8mo"
+group2="5X_4mo"
+
+# launch R script:
+Rscript --vanilla /dfs3b/swaruplab/smorabit/analysis/ADDS_2021/bin/parallel_DEGs.R \
+  --seurat $seurat \
+  --outdir $outdir \
+  --type $type \
+  --cluster $cluster \
+  --condition $condition \
+  --name $name \
+  --index $SLURM_ARRAY_TASK_ID \
+  --group1 $group1 \
+  --group2 $group2 \
+  --test "MAST" \
+  --pos "FALSE" \
+  --pct 0 \
+  --logfc 0 \
+  --verbose "TRUE" \
+  --latent $latent \
+  --cores 16 \
+  --assay "Spatial"

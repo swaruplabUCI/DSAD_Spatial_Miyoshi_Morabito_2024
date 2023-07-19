@@ -1,0 +1,121 @@
+
+```{r eval=FALSE}
+
+library(Seurat)
+library(harmony)
+library(tidyverse)
+library(cowplot)
+library(patchwork)
+library(RColorBrewer)
+colfunc <- colorRampPalette(rev(brewer.pal(11, 'Spectral' )))
+theme_set(theme_cowplot())
+
+setwd("/dfs3b/swaruplab/smorabit/analysis/ADDS_2021/visium/5xFAD/July_2021")
+
+fig_dir <- "figures/"
+data_dir <- "data/"
+
+umap_theme <- theme(
+  axis.line=element_blank(),
+  axis.text.x=element_blank(),
+  axis.text.y=element_blank(),
+  axis.ticks=element_blank(),
+  axis.title.x=element_blank(),
+  axis.title.y=element_blank(),
+  panel.background=element_blank(),
+  panel.border=element_blank(),
+  panel.grid.major=element_blank(),
+  panel.grid.minor=element_blank(),
+  plot.background=element_blank()
+)
+
+# re-load data:
+seurat_obj <- readRDS(file=paste0(data_dir, '5XFAD_seurat_processed.rds'))
+
+```
+
+## Run BayesSpace on two slides as an example::
+
+```{r eval=FALSE}
+
+library(BayesSpace)
+library(scater)
+
+# get just two samples:
+seurat_full <- seurat_obj
+seurat_obj <- subset(seurat_full, SAMPLE %in% c(211, 241, 342, 411))
+
+# convert from Seurat to SCE format:
+sce.combined <- seurat_obj %>% as.SingleCellExperiment()
+
+# add the row, col, imagerow, imagecol
+df <- rbind(
+  seurat_obj@images$slice1@coordinates,
+  seurat_obj@images$slice1.1@coordinates,
+  seurat_obj@images$slice1.6@coordinates,
+  seurat_obj@images$slice1.7@coordinates
+)
+sce.combined$row <- df$row
+sce.combined$imagerow <- df$imagerow
+sce.combined$col <- df$col
+sce.combined$imagecol <- df$imagecol
+
+# pre-process
+sce.combined = spatialPreprocess(sce.combined, n.PCs = 50) #lognormalize, PCA
+
+# correct with harmony
+sce.combined = RunHarmony(sce.combined, "SAMPLE", verbose = F)
+
+# run UMAP
+sce.combined = runUMAP(sce.combined, dimred = "HARMONY", name = "UMAP.HARMONY")
+
+# where are the row & col in sce.combined
+
+colnames(reducedDim(sce.combined, "UMAP.HARMONY")) = c("UMAP1", "UMAP2")
+
+
+p <- ggplot(data.frame(reducedDim(sce.combined, "UMAP.HARMONY")),
+  aes(x = UMAP1, y = UMAP2, color = factor(sce.combined$SAMPLE))) +
+  geom_point() +
+  labs(color = "Sample") +
+  theme_bw()
+
+pdf(paste0(fig_dir, 'baysespace_umap.pdf'), width=7, height=7)
+p
+dev.off()
+
+
+p <- clusterPlot(sce.combined, label='SAMPLE', platform="Visium") + #make sure no overlap between samples
+  labs(color = "Sample", title = "Offset check")
+
+pdf(paste0(fig_dir, 'slide_no_offset.pdf'), width=10, height=10)
+p
+dev.off()
+
+
+# clustering
+sce.combined$row[sce.combined$SAMPLE == 211] = 100 + sce.combined$row[sce.combined$SAMPLE == 211]
+sce.combined$col[sce.combined$SAMPLE == 241] = 150 + sce.combined$col[sce.combined$SAMPLE == 241]
+sce.combined$row[sce.combined$SAMPLE == 411] = 100 + sce.combined$row[sce.combined$SAMPLE == 411]
+sce.combined$col[sce.combined$SAMPLE ==  411] = 150 + sce.combined$col[sce.combined$SAMPLE ==  411]
+
+p <- clusterPlot(sce.combined, label='SAMPLE', platform="Visium") + #make sure no overlap between samples
+  labs(color = "Sample", title = "Offset check")
+
+pdf(paste0(fig_dir, 'slide_offset_test.pdf'), width=10, height=10)
+p
+dev.off()
+
+
+
+sce.combined = spatialCluster(sce.combined, use.dimred = "HARMONY", platform='Visium', q = 7, nrep = 10000) #use HARMONY
+
+p <- clusterPlot(sce.combined, color = NA) + #plot clusters
+labs(title = "BayesSpace joint clustering")
+
+pdf(paste0(fig_dir, 'BayesSpace_test.pdf'), width=10, height=10)
+p
+dev.off()
+
+
+```

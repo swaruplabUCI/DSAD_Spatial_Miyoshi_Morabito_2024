@@ -1,0 +1,50 @@
+#!/bin/bash
+#SBATCH --job-name=DSctPCC
+#SBATCH -p standard
+#SBATCH -A vswarup_lab
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=32
+#SBATCH --error=slurm-%J.err
+#SBATCH --mem 96G
+#SBATCH --array=1-10
+#SBATCH --time=20:00:00
+
+source ~/.bashrc
+conda activate cicero
+
+# seurat object path:
+seurat="/dfs3b/swaruplab/smorabit/analysis/ADDS_2021/splitseq/integration/data/ADDS_integrated.rds"
+outdir="/dfs3b/swaruplab/smorabit/analysis/ADDS_2021/splitseq/integration/DEGs/condition/DS_ct_PCC/"
+type="conditions"
+condition="Diagnosis"
+name="DS_ct_PCC"
+cluster="cell_type"
+latent="Batch,nCount_RNA,PMI"
+subset_col="Tissue"
+subset_groups="PCC"
+group1="DSAD"
+group2="Control"
+
+mkdir $outdir
+
+# launch R script:
+Rscript --vanilla /dfs3b/swaruplab/smorabit/analysis/ADDS_2021/bin/parallel_DEGs.R \
+  --seurat $seurat \
+  --outdir $outdir \
+  --type $type \
+  --cluster $cluster \
+  --condition $condition \
+  --name $name \
+  --index $SLURM_ARRAY_TASK_ID \
+  --group1 $group1 \
+  --group2 $group2 \
+  --test "MAST" \
+  --pos "FALSE" \
+  --pct 0 \
+  --logfc 0 \
+  --verbose "TRUE" \
+  --latent $latent \
+  --cores 32 \
+  --subset-col=$subset_col \
+  --subset-groups=$subset_groups

@@ -1,0 +1,48 @@
+#!/bin/bash
+#SBATCH --job-name=sr-5XFAD     ## Name of the job.
+#SBATCH -p standard          ## partition/queue name
+#SBATCH -A vswarup_lab           ## partition/queue name
+#SBATCH --nodes=1            ## (-N) number of nodes to use
+#SBATCH --ntasks=1          ## (-n) number of tasks to launch
+#SBATCH --cpus-per-task=16    ## number of cores the job needs
+#SBATCH --error=slurm-%J.err ## error log file
+#SBATCH --mem 64G              ## request 64GB of memory
+#SBATCH --array=0-7            ## job array
+#SBATCH --time=72:00:00
+
+# set directory for fastqs and images:
+fastqs="/dfs3b/swaruplab/smorabit/data/Visium_Mouse_2021/July_2021/fastqs/"
+align_dir="/dfs3b/swaruplab/smorabit/data/Visium_Mouse_2021/July_2021/alignment/"
+image_dir="/dfs3b/swaruplab/smorabit/data/Visium_Mouse_2021/July_2021/images/"
+
+# list files and get all sample names
+fastq_files=($(ls $fastqs))
+samples=($(ls $fastqs | cut -d '_' -f 1 | uniq))
+
+# index based on task ID
+let index="$SLURM_ARRAY_TASK_ID"
+
+# get sample based on index:
+sample=${samples[$index]}
+
+# get the image, slide, and area corresponding to this sample
+image_name=$(ls $image_dir | grep $sample)
+slide=$(echo $image_name | cut -d '_' -f 3)
+area=$(echo $image_name | cut -d '_' -f 4 | cut -d '.' -f 1)
+
+# get the alignment file:
+align_name=$(ls $align_dir | grep $sample)
+
+# run spaceranger
+transcriptome="/dfs3b/swaruplab/smorabit/resources/spaceranger_reference/refdata-gex-mm10-2020-A"
+~/swaruplab/smorabit/bin/software/spaceranger-1.2.1/spaceranger count \
+                       --id=$sample \
+                       --transcriptome=$transcriptome \
+                       --fastqs=$fastqs \
+                       --sample=$sample \
+                       --colorizedimage=$image_dir$image_name \
+                       --slide=$slide \
+                       --area=$area \
+                       --loupe-alignment=$align_dir$align_name \
+                       --localcores=16 \
+                       --localmem=64

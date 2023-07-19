@@ -1,0 +1,36 @@
+
+```{r eval=FALSE}
+
+# load R packages
+library(Seurat)
+library(tidyverse)
+library(cowplot)
+library(Matrix)
+library(viridis)
+library(RColorBrewer)
+library(patchwork)
+library(ggpubr)
+library(RColorBrewer)
+theme_set(theme_cowplot())
+
+# load fire dataset
+seurat_fire <- readRDS('/dfs7/swaruplab/smorabit/analysis/FIRE_mouse_2021/data/FIRE_mouse_seurat.rds')
+
+```
+
+combine marker DEGs into one table:
+
+```{r eval=FALSE}
+
+deg_dir <- '/dfs7/swaruplab/smorabit/analysis/ADDS_2021/visium/5xFAD/spotlight/fire_markers/'
+deg_files <- dir(deg_dir)[grepl('.csv', dir(deg_dir))]
+
+# combine  all tests into one table:
+combined <- Reduce(rbind, lapply(deg_files, function(file){
+  read.csv(paste0(deg_dir, file))
+}))
+
+write.csv(combined, file=paste0('/dfs7/swaruplab/smorabit/analysis/ADDS_2021/visium/5xFAD/spotlight/data/fire_markers.csv'), quote=FALSE, row.names=FALSE)
+
+
+```

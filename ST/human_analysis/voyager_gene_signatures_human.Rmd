@@ -1,0 +1,1900 @@
+
+In this notebook, we will compute gene signature scores for known relevant  gene
+signatures (DAMs, DAAs, etc), and we will also use the Voyager R package to try to
+perform geospatial statistical analysis based on these features.
+
+Load the Seurat data
+
+```{r eval=FALSE}
+
+# conda activate voyager
+library(Seurat)
+library(tidyverse)
+library(cowplot)
+library(patchwork)
+library(RColorBrewer)
+library(Voyager)
+library(UCell)
+library(ggrastr)
+library(ggrepel)
+library(viridis)
+library(Voyager)
+library(SpatialFeatureExperiment)
+library(scater)
+library(scran)
+library(SFEData)
+library(sf)
+library(ggplot2)
+library(scales)
+library(patchwork)
+library(BiocParallel)
+library(bluster)
+library(tidyverse)
+library(ggpubr)
+library(hdWGCNA)
+theme_set(theme_cowplot())
+
+# load helper functions
+source('/dfs7/swaruplab/smorabit/analysis/scWGCNA/bin/spatial_functions.R')
+
+# setup folders
+setwd("/dfs7/swaruplab/smorabit/analysis/ADDS_2021/visium/human/amyloid/")
+fig_dir <- "figures/"
+data_dir <- "data/"
+
+# re-load human SFE dataset and geospatial seurat
+sfe <- readRDS(paste0(data_dir,'ADDS_SFE.rds'))
+seurat_human <- readRDS(paste0(data_dir,"ADDS_seurat_processed_geospatial.rds"))
+
+################################################################################
+# Load data for this notebook
+################################################################################
+
+#seurat_human <- readRDS("/dfs7/swaruplab/emiyoshi/Visium_ADDS/ADDS_seurat_processed_annotated.rds")
+
+cp <- c("Control" = "#B8DBC5", "earlyAD" = "#E7BDE1" , "AD" = "#CF8BA3", "AD_DS" = "#9E6D7F")
+
+
+human_cp <- c(
+      "L1" = "#8B3D5A", "L2-3" = "#E7BDE1", "L3-4" = "#E6A4CD",
+      "L3-4-5" = "#CF8BA3", "L5-6" = "#9E6D7F", "L6b" = "#CDAEB9", "WM1" = "#64BCDB", "WM2" = "#62A7D7", "WM3" = "#99C8D7")
+
+seurat_human$Diagnosis <- factor(
+  as.character(seurat_human$Diagnosis),
+  levels = c("Control", "earlyAD", "AD", "AD_DS")
+)
+
+# set factor levels for human clusters:
+seurat_human$annotation <- factor(
+  as.character(seurat_human$annotation),
+  levels = names(human_cp)
+)
+
+# seurat objets with amyloid data:
+seurat_amyloid_human <- readRDS('/dfs7/swaruplab/smorabit/analysis/ADDS_2021/visium/human/amyloid/data/ADDS_seurat_processed_annotated_amyloid.rds')
+
+
+```
+
+Add in the Braak score metadata 
+
+```{r eval=FALSE}
+
+sample_meta <- read.csv('../data/DSAD_Samples_Metadata.csv', header=1)
+
+ix <- match(seurat_human$Sample, sample_meta$Seq.ID)
+all.equal(as.character(seurat_human$Sample), sample_meta$Seq.ID[ix])
+
+seurat_human$Plaque.Stage <- sample_meta$Plaque.Stage[ix]
+seurat_human$Tangle.Stage <- sample_meta$Tangle.Stage[ix]
+
+seurat_human$Plaque.Stage <- ifelse(is.na(seurat_human$Plaque.Stage) | seurat_human$Plaque.Stage == 'None', 'Stage 0', seurat_human$Plaque.Stage)
+seurat_human$Plaque.Stage <- factor(
+  as.character(seurat_human$Plaque.Stage),
+  levels = c('Stage 0', 'Stage A', 'Stage B', 'Stage C')
+)
+table(seurat_human$Plaque.Stage)
+
+```
+
+Compute gene signatures in the human dataset
+based on code that Emily sent me, and then plot the scores
+
+```{r eval=FALSE}
+
+# Chen 2021 (compilation of multiple studies) - human orthologs of mouse genes
+homeostatic <- c("BIN1", "SIGLEC6", "CD33", "CSF1R",
+              "CST3", "CX3CR1", "HEXB", "JUN",
+              "MEF2A", "MS4A6A", "P2RY12", # "MS4A6E" error
+              "P2RY13", "SALL1", "SELPLG", "SERINC3",
+              "TGFBR1", "TMEM119")
+
+DAM <- c("APOE", "AXL", "B2M", # "CCL3L3",
+      "CCL3L1", "CCL3", "CCL18", "CCL23",
+      "CD63", # "CCL15-CCL14", "CCL15",
+      "CD9", "CLEC7A", "CSF1", "CST7",
+      "CTSB", "CTSD", "FTH1", "GPNMB",
+      "IGF1", "IRF8", "ITGAX", "LGALS3",
+      "LPL", "SPP1", "TIMP2", "TREM2",
+      "TYROBP", "CD68")
+
+IFN <- c("CD69", "CXCL10", "IFIT2", "IFIT3",
+      "IRF7", "ISG15", "USP41", "USP18",
+      "IFITM3", "STAT1")
+
+MHC <- c("CD74", "HLA-DQB2", "HLA-DQB1", "HLA-E",
+      "HLA-DMA", "HLA-A", "HLA-DRB1", "HLA-DRA",
+      "HLA-DPB1", "CD83", "CD81")
+
+Cyc_M <- c("BIRC5", "CENPE", "MCM5", "MKI67", "TOP2A")
+
+GFAP_low <- c("LUZP2", "SLC7A10", "MFGE8")
+GFAP_high <- c("GFAP", "ID3", "AQP4", "MYOC", "ID1", "FABP7")
+DAA <- c("GFAP", "CTSB", "VIM", "OSMR", "SERPINA3", "GSN")
+
+
+# Kenigsbuch et al 2022 - human orthologs of mouse genes
+DOL <- c("B2M", "C4B", "C4A", "CD63",
+      "CD9", "CLPTM1", "CTSB", "FABP5",
+      "GPD1", "GSTP1", "HLA-E", # "H3-3A",
+      "IL33", "KLK6", "LBH", "OPALIN",
+      "PLEKHA1", "RNASE4", "RPL26", "RPS2",
+      "SERPINA3", "SGK1", "STMN1")
+
+DOL_markers <- list("DOL" = DOL, 'NFOL'=c('TCF7L2', 'CASR', 'CEMIP2', 'ITPR2'),
+								  'MFOL'=c('MAL', 'MOG', 'PLP1', 'OPALIN', 'SERINC5', 'CTPS1'),
+								  'MOL'=c('KLK6', 'APOD', 'SLC5A11', 'PDE1A'))
+
+# load mouse <-> human gene name table:
+hg38_mm10_genes <- read.table(
+  "/dfs7/swaruplab/smorabit/resources/hg38_mm10_orthologs_2021.txt",
+  sep='\t',
+  header=TRUE
+)
+colnames(hg38_mm10_genes) <-c('hg38_id', 'mm10_id', 'mm10_name', 'hg38_name')
+hg38_mm10_genes <- dplyr::select(hg38_mm10_genes, c(hg38_name, mm10_name, hg38_id, mm10_id))
+
+hg38_mm10_genes <- subset(hg38_mm10_genes, mm10_name != '' & hg38_name != '')
+
+# need to make sure that there's only one entry for each gene in hg38_mm10_genes
+mm10_genes <- unique(hg38_mm10_genes$mm10_name)
+hg38_genes <- unique(hg38_mm10_genes$hg38_name)
+hg38_mm10_genes <- hg38_mm10_genes[match(mm10_genes, hg38_mm10_genes$mm10_name),]
+
+# Load PIGs from Chen et al 2020
+pig_table <- read.csv('~/swaruplab/smorabit/analysis/ADDS_2021/data/chen_modules.csv')
+
+# convert to human names
+ix <- match(pig_table$gene, hg38_mm10_genes$mm10_name)
+pig_table$gene_hg38 <- hg38_mm10_genes$hg38_name[ix]
+
+pigs <- subset(pig_table, module == 'PIG') %>% .$gene_hg38 %>% na.omit %>% as.character
+oligs <- subset(pig_table, module == 'OLIG') %>% .$gene_hg38 %>% na.omit %>% as.character
+
+
+gene_lists <- list("homeostatic" = homeostatic, "DAM" = DAM, "IFN" = IFN, "MHC" = MHC, "Cyc_M" = Cyc_M, 'PIGs' = pigs, 'OLIG' = oligs)
+gene_lists <- c(gene_lists, DOL_markers)
+
+# compute scores:
+seurat_human <- AddModuleScore_UCell(seurat_human, features=gene_lists)
+
+
+feats <- paste0(names(gene_lists), '_UCell')
+
+for(cur_gene in feats){
+  p <- SampleFeaturePlot(
+    seurat_human,
+    feature=cur_gene,
+    #samples_to_plot = selected_samples,
+    sample_labels = c("Diagnosis", "Sex", 'Age'),
+    ncol = 10,
+    raster=TRUE,
+    plot_max = 'q99',
+    plot_min = 'q5',
+    colfunc = inferno,
+    rev_colors=TRUE,
+    dpi=800,
+    combine=FALSE
+  )
+
+  p <- lapply(p, function(x){
+    x + theme(
+      plot.title = element_text(face='bold', size=15, vjust=-1),
+      plot.margin = margin(0,0,0,0)
+    ) + labs(fill = cur_gene)
+  })
+
+  patch <- wrap_plots(p, ncol=8, widths=1, heights=1) + plot_layout(guides='collect')
+
+  pdf(paste0(fig_dir, 'genescores/', cur_gene, '_featureplot.pdf'), width=12, height=12)
+#  print(p)
+  print(patch)
+  dev.off()
+
+}
+
+
+```
+
+
+Create an SFE object holding all 39 samples
+
+```{r eval=FALSE}
+
+
+library(Voyager)
+library(SpatialFeatureExperiment)
+library(scater)
+library(scran)
+library(SFEData)
+library(sf)
+library(ggplot2)
+library(scales)
+library(patchwork)
+library(BiocParallel)
+library(bluster)
+library(tidyverse)
+library(ggpubr)
+
+
+table(seurat_human$Sample)
+table(seurat_human$SampleID)
+table(seurat_human$seqbatch)
+
+
+# load visium data
+spaceranger_dir <- '/dfs7/swaruplab/smorabit/data/ADDS_2021/visium/'
+batches <- c('October_2021', 'Nov_24_2021', 'Dec_13_2021', 'Dec_20_2021')
+
+files <- unlist(lapply(batches, function(x){
+  cur_dir <- paste0(spaceranger_dir, x, '/spaceranger_count/')
+  paste0(cur_dir, dir(cur_dir), '/outs/')
+}))
+files
+
+samples <- unlist(lapply(batches, function(x){
+  cur_dir <- paste0(spaceranger_dir, x, '/spaceranger_count/')
+  paste0(x,'_', dir(cur_dir))
+}))
+samples <- gsub('October', 'Oct', samples)
+
+# create SFE from visium data
+sfe <- read10xVisiumSFE(files, sample_id=samples, type='sparse', data='raw', load=FALSE)
+
+# only keep spots that are in the tissue
+sfe <- sfe[, colData(sfe)$in_tissue]
+
+##############################################################
+# transfer the Seurat meta-data to the SFE object
+##############################################################
+
+# match barcodes between the seurat object and the SFE object
+bc <- do.call(rbind, strsplit(colnames(seurat_human), '_'))[,1]
+bc <- do.call(rbind, strsplit(bc, '-'))[,1]
+seurat_human$bc <- paste0(bc, '-', as.character(seurat_human$Sample))
+bc <- do.call(rbind, strsplit(colnames(sfe), '-'))[,1]
+sfe$bc <- paste0(bc, '-', as.character(sfe$sample_id))
+
+# match seurat metadata
+meta <- seurat_human@meta.data
+ix <- match(seurat_human$bc, sfe$bc)
+meta <- meta[ix,] # %>% dplyr::select(-bc)
+all.equal(as.character(sfe$bc), as.character(meta$bc))
+
+meta <- meta[,!(colnames(meta) %in% colnames(colData(sfe)))]
+
+# add Seurat metadata to SFE
+colData(sfe) <- cbind(colData(sfe), meta)
+
+##############################################################
+# change gene names from ensembl ID to gene symbols
+##############################################################
+
+gene_file <- '~/swaruplab/smorabit/data/ADDS_2021/visium/Dec_13_2021/spaceranger_count/Human8/outs/filtered_feature_bc_matrix/features.tsv.gz'
+gene_table <- read.table(gene_file, sep='\t')
+
+# set gene names
+rownames(sfe) <- gene_table$V2
+
+##############################################################
+# normalize data and compute spatial graphs
+##############################################################
+
+clusters <- sfe$annotation
+sfe <- computeSumFactors(sfe, clusters=clusters)
+sfe <- logNormCounts(sfe)
+
+# compute spatial neighborhood graph
+gs <- findVisiumGraph(sfe, sample_id = 'all')
+for(sample in names(gs)){
+  colGraph(sfe, sample_id = sample, 'visium') <- gs[[sample]]
+}
+
+# compute a binary-weight graph
+gs <- findVisiumGraph(sfe, sample_id= 'all', style = "B")
+for(sample in names(gs)){
+  colGraph(sfe, sample_id = sample, 'visium_B') <- gs[[sample]]
+}
+
+##############################################################
+# transfer the amyloid data to the sfe object
+##############################################################
+
+# match barcodes between the seurat object and the SFE object
+bc <- do.call(rbind, strsplit(colnames(seurat_amyloid_human), '_'))[,1]
+bc <- do.call(rbind, strsplit(bc, '-'))[,1]
+seurat_amyloid_human$bc <- paste0(bc, '-', as.character(seurat_amyloid_human$Sample))
+
+# match seurat metadata
+ix <- match(sfe$bc, seurat_amyloid_human$bc)
+
+# add amyloig + OC scores to the object:
+sfe$Amylo_Area <- seurat_amyloid_human$Amylo_Area[ix]
+sfe$OC_Area <- seurat_amyloid_human$OC_Area[ix]
+
+# compute log scale of OC and Amyloglo scores
+colData(sfe)$Amylo_Area_log <- log(sfe$Amylo_Area + 1)
+colData(sfe)$OC_Area_log <- log(sfe$OC_Area + 1)
+
+################################################################################
+# geospatial stats for amyloid scores
+################################################################################
+
+feats <- c('Amylo_Area_log', 'OC_Area_log')
+feats <- c('Amylo_Area', 'OC_Area')
+
+# compute Moran's I for amyloglo and OC scores
+for(cur_sample in unique(seurat_amyloid_human$Sample)){
+  print(cur_sample)
+  sfe <- colDataUnivariate(
+    sfe, type = "localmoran", features = feats,
+    colGraphName = "visium", sample_id = cur_sample
+  )
+}
+
+# compute Getis-Ord Gi* or amyloglo and OC scores
+for(cur_sample in unique(seurat_amyloid_human$Sample)){
+  print(cur_sample)
+  sfe <- colDataUnivariate(
+    sfe, type = "localG_perm", features = feats,
+    colGraphName = "visium_B", include_self=TRUE,
+    sample_id = cur_sample
+  )
+}
+
+################################################################################
+# geospatial stats for gene signatures
+################################################################################
+
+feats <- c(paste0(names(gene_lists), '_UCell'))
+
+# compute Moran's I
+for(cur_sample in unique(sfe$sample_id)){
+  print(cur_sample)
+  sfe <- colDataUnivariate(
+    sfe, type = "localmoran", features = feats,
+    colGraphName = "visium", sample_id = cur_sample
+  )
+}
+
+# compute Getis-Ord Gi*
+for(cur_sample in unique(sfe$sample_id)){
+  print(cur_sample)
+  sfe <- colDataUnivariate(
+    sfe, type = "localG_perm", features = feats,
+    colGraphName = "visium_B", include_self=TRUE,
+    sample_id = cur_sample
+  )
+}
+
+
+
+###############################################################
+# save the SFE object
+###############################################################
+
+saveRDS(sfe, paste0(data_dir, 'ADDS_SFE.rds'))
+
+
+###############################################################
+# Plot the results in Seurat
+###############################################################
+
+# move the results to the seurat object:
+ix <- match(as.character(sfe$bc), as.character(seurat_human$bc))
+all.equal(as.character(sfe$bc[ix]), as.character(seurat_human$bc))
+
+feats <- c(paste0(names(gene_lists), '_UCell'), 'Amylo_Area_log', 'OC_Area_log', 'Amylo_Area', 'OC_Area')
+
+# amylo glo score Gi
+for(feat in feats){
+
+  print(feat)
+
+  # Getis-Ord Gi*
+  feat_new <- paste0(feat, '_Gi')
+  test <- localResult(sfe, 'localG_perm', feat, sample_id='all')[,'localG']
+  seurat_human@meta.data[[feat_new]] <- test[ix]
+  seurat_human@meta.data[[feat_new]]  <- ifelse(is.na(seurat_human@meta.data[[feat_new]]), 0, seurat_human@meta.data[[feat_new]])
+  seurat_human@meta.data[[feat_new]]  <- ifelse(seurat_human@meta.data[[feat_new]]  == Inf, 0, seurat_human@meta.data[[feat_new]])
+
+  # moran's I
+  feat_new <- paste0(feat, '_lmi')
+  test <- localResult(sfe, 'localmoran', feat, sample_id='all')[,'Ii']
+  seurat_human@meta.data[[feat_new]] <- test[ix]
+  seurat_human@meta.data[[feat_new]]  <- ifelse(is.na(seurat_human@meta.data[[feat_new]]), 0, seurat_human@meta.data[[feat_new]])
+  seurat_human@meta.data[[feat_new]]  <- ifelse(seurat_human@meta.data[[feat_new]]  == Inf, 0, seurat_human@meta.data[[feat_new]])
+}
+
+seurat_human$Amylo_Area_log <- sfe$Amylo_Area_log[ix]
+seurat_human@meta.data[['Amylo_Area_log']]  <- ifelse(is.na(seurat_human@meta.data[['Amylo_Area_log']]), 0, seurat_human@meta.data[['Amylo_Area_log']])
+seurat_human@meta.data[['Amylo_Area_log']]  <- ifelse(seurat_human@meta.data[['Amylo_Area_log']]  == Inf, 0, seurat_human@meta.data[['Amylo_Area_log']])
+
+seurat_human$OC_Area_log <- sfe$OC_Area_log[ix]
+seurat_human@meta.data[['OC_Area_log']]  <- ifelse(is.na(seurat_human@meta.data[['OC_Area_log']]), 0, seurat_human@meta.data[['OC_Area_log']])
+seurat_human@meta.data[['OC_Area_log']]  <- ifelse(seurat_human@meta.data[['OC_Area_log']]  == Inf, 0, seurat_human@meta.data[['OC_Area_log']])
+
+
+seurat_human$Amylo_Area <- sfe$Amylo_Area[ix]
+seurat_human@meta.data[['Amylo_Area']]  <- ifelse(is.na(seurat_human@meta.data[['Amylo_Area']]), 0, seurat_human@meta.data[['Amylo_Area']])
+seurat_human@meta.data[['Amylo_Area']]  <- ifelse(seurat_human@meta.data[['Amylo_Area']]  == Inf, 0, seurat_human@meta.data[['Amylo_Area']])
+
+seurat_human$OC_Area <- sfe$OC_Area[ix]
+seurat_human@meta.data[['OC_Area']]  <- ifelse(is.na(seurat_human@meta.data[['OC_Area']]), 0, seurat_human@meta.data[['OC_Area']])
+seurat_human@meta.data[['OC_Area']]  <- ifelse(seurat_human@meta.data[['OC_Area']]  == Inf, 0, seurat_human@meta.data[['OC_Area']])
+
+
+# save seurat object:
+saveRDS(seurat_human, file=paste0(data_dir, "/ADDS_seurat_processed_geospatial.rds"))
+
+################################################################################
+# plot amyloid geospatial stats
+################################################################################
+
+# only plot samples that have amyloid scores:
+amyloid_samples <- unique(seurat_amyloid_human$Sample)
+
+for(feat in c('Amylo_Area_log', 'OC_Area_log', 'Amylo_Area', 'OC_Area')){
+  #feat_name <- strsplit(feat, '_')[[1]][1]
+  feat_name <- feat
+  for(modifier in c('', '_Gi', '_lmi')){
+
+    print(feat_name)
+    print(modifier)
+
+    if(modifier == '_lmi'){
+      plot_min <- 0.5
+    } else{
+      plot_min = 0
+    }
+
+    p <- SampleFeaturePlot(
+      seurat_human,
+      feature=paste0(feat, modifier),
+      sample_labels = c("Diagnosis", "Sex", 'Age'),
+      samples_to_plot = amyloid_samples,
+      ncol = 10,
+      raster=TRUE,
+      plot_max = 'q99',
+      plot_min = plot_min,
+      colfunc = inferno,
+      rev_colors=TRUE,
+      dpi=800,
+      combine=FALSE
+    )
+
+    p <- lapply(p, function(x){
+      x + theme(
+        plot.title = element_text(face='bold', size=12, vjust=-1),
+        plot.margin = margin(0,0,0,0)
+      ) + labs(fill = paste0(feat_name, ' ', modifier))
+
+    })
+
+    patch <- wrap_plots(p, ncol=8, widths=1, heights=1) + plot_layout(guides='collect')
+
+    pdf(paste0(fig_dir, 'featureplot_', feat_name, modifier, '.pdf'), width=12, height=6)
+    print(patch)
+    dev.off()
+
+  }
+}
+
+
+################################################################################
+# plot the genescore geospatial stats
+################################################################################
+
+feats <- c(paste0(names(gene_lists), '_UCell'))
+
+for(feat in feats){
+  print(feat)
+  feat_name <- strsplit(feat, '_')[[1]][1]
+  for(modifier in c('', '_Gi', '_lmi')){
+
+    print(feat_name)
+    print(modifier)
+
+    if(modifier == '_lmi'){
+      plot_min <- 0.5
+    } else{
+      plot_min = 0
+    }
+
+    p <- SampleFeaturePlot(
+      seurat_human,
+      feature=paste0(feat, modifier),
+      sample_labels = c("Diagnosis", "Sex", 'Age'),
+      ncol = 10,
+      raster=TRUE,
+      plot_max = 'q99',
+      plot_min = plot_min,
+      colfunc = inferno,
+      rev_colors=TRUE,
+      dpi=800,
+      combine=FALSE
+    )
+
+    p <- lapply(p, function(x){
+      x + theme(
+        plot.title = element_text(face='bold', size=10, vjust=-1),
+        plot.margin = margin(0,0,0,0)
+      ) + labs(fill = paste0(feat_name, ' ', modifier))
+
+    })
+
+    patch <- wrap_plots(p, ncol=10, widths=1, heights=1) + plot_layout(guides='collect')
+
+    pdf(paste0(fig_dir, 'featureplot_', feat_name, modifier, '.pdf'), width=12, height=6)
+    print(patch)
+    dev.off()
+
+  }
+}
+
+```
+
+How much amyloid in each cluster? 
+
+Try a violin plot and try a bar plot?
+
+```{r eval=FALSE}
+
+seurat_human$region <- as.character(seurat_human$annotation)
+seurat_human$region <- ifelse(grepl('WM', seurat_human$region), 'WM', seurat_human$region)
+seurat_human$region <- factor(as.character(seurat_human$region), levels=c('L1', 'L2-3', 'L3-4', 'L3-4-5', 'L5-6', 'L6b', 'WM'))
+
+# get a list of samples that we have amyloid scores for:
+amyloid_samples <- seurat_human@meta.data %>%
+  group_by(Sample) %>%
+  summarise(Mean = mean(Amylo_Area)) %>%
+  filter(Mean != 0) %>% .$Sample %>% as.character
+
+feat <- 'OC_Area_log_Gi'
+seurat_human$feat <- seurat_human@meta.data[[feat]]
+seurat_human$feat <- ifelse(seurat_human$feat > 0, seurat_human$feat, 0)
+ymax <- subset(seurat_human@meta.data, Sample %in% amyloid_samples) %>% .$feat %>% quantile(0.98) %>% as.numeric
+
+p <- VlnPlot(
+  subset(seurat_human, Sample %in% amyloid_samples),
+  group.by = 'annotation',
+  split.by = 'Diagnosis',
+  features = 'feat',
+  y.max = ymax,
+  pt.size=0
+) + ggtitle(feat) + xlab('') #+ geom_boxplot()
+
+
+pdf(paste0(fig_dir, 'test_amyloid_vln_seurat.pdf'), width=10, height=4)
+print(p)
+dev.off()
+
+
+features <- c('Amylo_Area_log', 'Amylo_Area_log_Gi', 'OC_Area_log', 'OC_Area_log_Gi')
+features <- c('OC_Area_log', 'Amylo_Area_log')
+
+p <- custom_vln(
+    subset(seurat_human, Sample %in% amyloid_samples),
+    features = features,
+    group.by = 'region',
+    split.by = 'Diagnosis',
+   # group_color_df = cell_id_color_df,
+  #  groups = c('MHb-1', 'MHb-2', 'MHb-3', 'MHb-4', 'MHb-5',
+  #       'LHb-1', 'LHb-2', 'LHb-3', 'LHb-4', 'LHb-5', 'LHb-6',
+  #       'PHb-1', 'PHb-2', 'PHb-3', 'PHb-4'),
+    add_boxplot=FALSE,
+   # split_colors=group_cp,
+   # selected_split = c('Nurr2c', 'GFP'),
+    add_colorbar=TRUE,
+    plot_ymin = 0,
+   # plot_ymax=6,
+    #comparisons=list(c('Control', 'AD'), c('Control', 'AD_DS'))
+    #ref_group=NULL
+  )
+
+  #seurat_obj@meta.data <- seurat_obj@meta.data[,!(colnames(seurat_obj@meta.data) %in% colnames(MEs))]
+
+pdf(paste0(fig_dir, 'amyloid_vln_clusters2.pdf'), width=10, height=4)
+p
+dev.off()
+
+
+
+```
+
+
+For each cluster and in each sample, compute the total amyloid area / number of ST spots 
+
+```{r eval=FALSE}
+
+# load the image analysis results:
+img_df <- read.csv(file='/dfs7/swaruplab/smorabit/analysis/ADDS_2021/visium/human/amyloid/data/ADDS_seurat_processed_annotated_amyloid.csv')
+
+# get a list of samples that we have amyloid scores for:
+amyloid_samples <- seurat_human@meta.data %>%
+  group_by(Sample) %>%
+  summarise(Sum = sum(Amylo_Area)) %>%
+  filter(Sum != 0) %>% .$Sample %>% as.character
+
+# subset the seurat obj metadata to just have the amyloid samples
+seurat_human$barcode <- colnames(seurat_human)
+meta_df <- seurat_human@meta.data[img_df$X,]
+meta_df$OC_Number <- img_df$OC_Number
+meta_df$Amylo_Number <- img_df$Amylo_Number
+
+# old
+# plot_df <- seurat_human@meta.data %>% 
+#   subset(Sample %in% amyloid_samples) %>%
+#   group_by(Sample, region, Diagnosis) %>%
+#   summarise(
+#     oc_sum = sum(OC_Area) / n(), 
+#     amylo_sum = sum(Amylo_Area) / n(),
+#   ) %>% 
+#   ungroup 
+
+plot_df <- meta_df %>% 
+  group_by(Sample, region, Diagnosis) %>%
+  summarise(
+    oc_sum = sum(OC_Number) / n(), 
+    amylo_sum = sum(Amylo_Number) / n(),
+  ) %>% 
+  ungroup 
+
+my_comparisons <- list(c('Control', 'earlyAD'), c('Control', 'AD'), c('Control', 'AD_DS'))
+
+p1 <- ggplot(plot_df, aes(x=Diagnosis, y = oc_sum, fill = Diagnosis)) + 
+  geom_boxplot(outlier.shape=NA, width=0.75) + 
+  geom_jitter(size=0.5, width=0.25) +
+  scale_fill_manual(values=cp) +
+  RotatedAxis() +
+  stat_compare_means(
+    comparisons = my_comparisons, 
+    label='p.signif', 
+    method='wilcox'
+  ) +  theme(
+    axis.text.x= element_blank(),
+    axis.ticks.x = element_blank(),
+    axis.title.x = element_blank(),
+    plot.margin = margin(c(0,0,0,0))
+  ) +
+  ylab('Avg. OC Num') + 
+  facet_wrap(~region, ncol=7) 
+ 
+p2 <- ggplot(plot_df, aes(x=Diagnosis, y = amylo_sum, fill = Diagnosis)) + 
+  geom_boxplot(outlier.shape=NA, width=0.75) + 
+  geom_jitter(size=0.5, width=0.25) +
+  scale_fill_manual(values=cp) +
+  RotatedAxis() +
+  stat_compare_means(
+    comparisons = my_comparisons, 
+    label='p.signif', 
+    method='wilcox'
+  ) +
+  theme(
+    axis.text.x= element_blank(),
+    axis.ticks.x = element_blank(),
+    axis.title.x = element_blank(),
+    plot.margin = margin(c(0,0,0,0))
+  ) +
+  ylab('Avg. Amyloglo Num') + 
+  facet_wrap(~region, ncol=7) 
+
+pdf(paste0(fig_dir, 'amyloid_box2.pdf'), width=8, height=4)
+p1 / p2 + plot_layout(guides='collect')
+dev.off()
+
+#########################################
+# Comparisons by plaque score:
+#########################################
+
+
+plot_df <- meta_df %>% 
+  group_by(Sample, region, Plaque.Stage) %>%
+  summarise(
+    oc_sum = sum(OC_Number) / n(), 
+    amylo_sum = sum(Amylo_Number) / n(),
+  ) %>% 
+  ungroup 
+head(plot_df)
+
+my_comparisons <- list(c('Stage 0', 'Stage A'), c('Stage 0', 'Stage B'), c('Stage 0', 'Stage C'))
+
+p1 <- ggplot(plot_df, aes(x=Plaque.Stage, y = oc_sum, fill = Plaque.Stage)) + 
+  geom_boxplot(outlier.shape=NA, width=0.75) + 
+  geom_jitter(size=0.5, width=0.25) +
+  scale_fill_brewer(palette = 'Purples') +
+  RotatedAxis() +
+  stat_compare_means(
+    comparisons = my_comparisons, 
+    label='p.signif', 
+    method='wilcox'
+  ) +  theme(
+    axis.text.x= element_blank(),
+    axis.ticks.x = element_blank(),
+    axis.title.x = element_blank(),
+    plot.margin = margin(c(0,0,0,0)),
+    legend.position = 'bottom'
+  ) +
+  ylab('Avg. OC Num') + 
+  facet_wrap(~region, ncol=7) 
+ 
+p2 <- ggplot(plot_df, aes(x=Plaque.Stage, y = amylo_sum, fill = Plaque.Stage)) + 
+  geom_boxplot(outlier.shape=NA, width=0.75) + 
+  geom_jitter(size=0.5, width=0.25) +
+  scale_fill_brewer(palette = 'Purples') +
+  RotatedAxis() +
+  stat_compare_means(
+    comparisons = my_comparisons, 
+    label='p.signif', 
+    method='wilcox'
+  ) +
+  theme(
+    axis.text.x= element_blank(),
+    axis.ticks.x = element_blank(),
+    axis.title.x = element_blank(),
+    plot.margin = margin(c(0,0,0,0)),
+    legend.position = 'bottom'
+  ) +
+  ylab('Avg. Amyloglo Num') + 
+  facet_wrap(~region, ncol=7) 
+
+pdf(paste0(fig_dir, 'amyloid_box3.pdf'), width=6, height=3.5)
+p1 / p2 + plot_layout(guides='collect') & theme(legend.position='bottom')
+dev.off()
+
+
+```
+
+
+
+
+Amyloid Differential Gene expression analysis with Monocle3 GLM
+
+Running this analysis with Grey + White matter together has issues, since there's
+more plaques in the grey matter, it looked like the amyloid DEGs and associated
+GO terms were biased towards neuronal genes up near amyloid, and glial genes
+up away from the amyloid. However there were still some interesting GO results
+in this more "global" analysis, with APP metabolism down and response to amyloid up.
+Now going to modify to try this out in just the white matter to see what happens.
+
+
+```{r eval=FALSE}
+
+library(monocle3)
+library(tictoc)
+
+# get a list of samples that we have amyloid scores for:
+amyloid_samples <- seurat_human@meta.data %>%
+  group_by(Sample) %>%
+  summarise(Mean = mean(Amylo_Area)) %>%
+  filter(Mean != 0) %>% .$Sample %>% as.character
+
+################################################################################
+# Run DEGs with all clusters together
+################################################################################
+
+# # make a new CDS with just the RNA-seq data in order to do t-DEGs:
+# expr_matrix  <- GetAssayData(
+#   subset(seurat_human, Diagnosis != 'Control' & Sample %in% amyloid_samples),
+#   slot='data',
+# )
+# test_genes <- rownames(expr_matrix )[rowSums(expr_matrix )!=0]
+
+# # create celldataset object
+# cds <- new_cell_data_set(
+#   expr_matrix[test_genes,],
+#   cell_metadata=seurat_human@meta.data[colnames(expr_matrix),]
+# )
+# print(dim(cds))
+
+# # identify OC hotspot DEGs
+# gene_fits <- monocle3::fit_models(
+#   cds,
+#   model_formula_str = "~OC_Area_log_Gi + Sample + nCount_Spatial",
+#   verbose=TRUE,
+#   cores=8
+# )
+
+# fit_coefs <- coefficient_table(gene_fits)
+
+# degs <- fit_coefs %>% filter(term == "OC_Area_log_Gi") %>%
+#       select(gene_id, term, p_value, q_value, test_val, std_err, estimate, normalized_effect)
+
+# # write amyloid-degs table as a csv:
+# write.csv(degs, file=paste0(data_dir, 'OC_Area_log_Gi_glm_DEGs.csv'), quote=FALSE, row.names=FALSE)
+
+################################################################################
+# Run DEGs with grey vs white matter separately
+################################################################################
+
+# add a new column to distinguish between white and grey matter
+seurat_human$tissue_type <- ifelse(grepl('WM', as.character(seurat_human$annotation)), 'WM', 'GM')
+
+# get the expression matrix for the selected spots
+expr_matrix  <- GetAssayData(
+  subset(seurat_human, Diagnosis != 'Control' & Sample %in% amyloid_samples & tissue_type == 'GM'),
+  slot='data',
+)
+test_genes <- rownames(expr_matrix )[rowSums(expr_matrix )!=0]
+
+# create celldataset object
+cds <- new_cell_data_set(
+  expr_matrix[test_genes,],
+  cell_metadata=seurat_human@meta.data[colnames(expr_matrix),]
+)
+print(dim(cds))
+
+# identify Amylo hotspot DEGs
+tic()
+gene_fits <- monocle3::fit_models(
+  cds,
+  model_formula_str = "~Amylo_Area_Gi + Sample + nCount_Spatial",
+  # verbose=TRUE,
+  cores=1 # got a multithreading error some times but not everytime???
+)
+
+fit_coefs <- coefficient_table(gene_fits)
+elapsed_time <- toc() # 3 hours
+
+degs <- fit_coefs %>% filter(term == "Amylo_Area_Gi") %>%
+      select(gene_id, term, p_value, q_value, test_val, std_err, estimate, normalized_effect)
+
+# write amyloid-degs table as a csv:
+write.csv(degs, file=paste0(data_dir, 'Amylo_Area_Gi_glm_GM_DEGs.csv'), quote=FALSE, row.names=FALSE)
+
+degs <- read.csv(file=paste0(data_dir, 'Amylo_Area_Gi_glm_GM_DEGs.csv'))
+
+
+
+
+# identify Amylo log area hotspot DEGs
+tic()
+gene_fits <- monocle3::fit_models(
+  cds,
+  model_formula_str = "~Amylo_Area_log_Gi + Sample + nCount_Spatial",
+  # verbose=TRUE,
+  cores=1 # got a multithreading error some times but not everytime???
+)
+
+fit_coefs <- coefficient_table(gene_fits)
+elapsed_time <- toc() # 3 hours
+
+degs <- fit_coefs %>% filter(term == "Amylo_Area_log_Gi") %>%
+      select(gene_id, term, p_value, q_value, test_val, std_err, estimate, normalized_effect)
+
+# write amyloid-degs table as a csv:
+write.csv(degs, file=paste0(data_dir, 'Amylo_Area_log_Gi_glm_GM_DEGs.csv'), quote=FALSE, row.names=FALSE)
+
+degs <- read.csv(file=paste0(data_dir, 'Amylo_Area_log_Gi_glm_GM_DEGs.csv'))
+
+subset(degs, q_value < 0.05) %>% dim
+
+
+all.equal(as.data.frame(degs1), as.data.frame(degs2))
+all.equal(as.data.frame(degs), as.data.frame(degs2))
+all.equal(as.data.frame(degs), as.data.frame(degs1))
+
+old_degs <- read.csv(file=paste0('../voyager/data/Amyloglo_Score_log_Gi_glm_GM_DEGs.csv'))
+subset(old_degs, q_value < 0.05) %>% dim
+
+tmp1 <- subset(degs, q_value < 0.05)
+tmp2 <- subset(old_degs, q_value < 0.05) 
+
+
+
+################################################################################
+# Run DEGs with grey matter for the OC score
+################################################################################
+
+# identify Amylo log area hotspot DEGs
+tic()
+gene_fits <- monocle3::fit_models(
+  cds,
+  model_formula_str = "~OC_Area_log_Gi + Sample + nCount_Spatial",
+  # verbose=TRUE,
+  cores=1 # got a multithreading error some times but not everytime???
+)
+
+fit_coefs <- coefficient_table(gene_fits)
+elapsed_time <- toc() # 3 hours
+
+degs <- fit_coefs %>% filter(term == "OC_Area_log_Gi") %>%
+      select(gene_id, term, p_value, q_value, test_val, std_err, estimate, normalized_effect)
+
+# write amyloid-degs table as a csv:
+write.csv(degs, file=paste0(data_dir, 'OC_Area_log_Gi_glm_GM_DEGs.csv'), quote=FALSE, row.names=FALSE)
+
+degs <- read.csv(file=paste0(data_dir, 'OC_Area_log_Gi_glm_GM_DEGs.csv'))
+
+
+################################################################################
+# Run DEGs for each cluster separately 
+################################################################################
+
+# clusters <- levels(seurat_human$annotation)
+
+# # add a new column to distinguish between white and grey matter
+# seurat_human$tissue_type <- ifelse(grepl('WM', as.character(seurat_human$annotation)), 'WM', 'GM')
+
+# deg_list <- list()
+# for(cur_cluster in clusters){
+
+#   print(cur_cluster)
+
+#   # get the expression matrix for the selected spots
+#   expr_matrix  <- GetAssayData(
+#     subset(seurat_human, Diagnosis != 'Control' & Sample %in% amyloid_samples & annotation == cur_cluster),
+#     slot='data',
+#   )
+#   test_genes <- rownames(expr_matrix )[rowSums(expr_matrix )!=0]
+
+#   # create celldataset object
+#   cds <- new_cell_data_set(
+#     expr_matrix[test_genes,],
+#     cell_metadata=seurat_human@meta.data[colnames(expr_matrix),]
+#   )
+#   print(dim(cds))
+
+#   # identify OC hotspot DEGs
+#   tic()
+#   gene_fits <- monocle3::fit_models(
+#     cds,
+#     model_formula_str = "~Amylo_Area_log_Gi + Sample + nCount_Spatial",
+#     # verbose=TRUE,
+#     cores=1 # got a multithreading error some times but not everytime???
+#   )
+
+#   fit_coefs <- coefficient_table(gene_fits)
+#   elapsed_time <- toc() # ~10 minutes!
+
+#   degs <- fit_coefs %>% filter(term == "Amylo_Area_log_Gi") %>%
+#         select(gene_id, term, p_value, q_value, test_val, std_err, estimate, normalized_effect)
+
+#   degs$group <- cur_cluster
+#   deg_list[[cur_cluster]] <- degs
+
+# }
+
+# degs <- do.call(rbind, deg_list)
+
+# # write amyloid-degs table as a csv:
+# write.csv(degs, file=paste0(data_dir, 'human_Amylo_Area_log_Gi_DEGs.csv'), quote=FALSE, row.names=FALSE)
+
+# degs <- read.csv(file=paste0(data_dir, 'Amylo_Area_log_Gi_glm_GM_DEGs.csv'))
+
+################################################################################
+# Plot it as a Volcano plot?
+################################################################################
+
+# library(ggrepel)
+
+# degs <- read.csv(file=paste0(data_dir, 'Amylo_Area_log_Gi_glm_GM_DEGs.csv'))
+
+# cp <- c("Control" = "#B8DBC5", "earlyAD" = "#E7BDE1" , "AD" = "#CF8BA3", "AD_DS" = "#9E6D7F")
+
+# # late-AD
+# color1 <- cp['AD']; color2 <- cp['Control']
+
+# # early-AD
+# color1 <- cp['earlyAD']; color2 <- cp['Control']
+
+# # AD/DS
+# color1 <- cp['AD_DS']; color2 <- cp['Control']
+
+# # exclude MT genes
+# degs <- degs[!grepl('MT-', degs$gene_id),]
+
+# # lowest non-zero value
+# lowest <- degs %>% subset(q_value != 0) %>% top_n(-1, wt=q_value) %>% .$q_value
+# degs$q_value <- ifelse(degs$q_value == 0, lowest, degs$q_value)
+
+# nlabel <- 10
+
+# cur_degs <- Reduce(rbind, lapply(unique(degs$term), function(x){
+#   cur <- subset(degs, term == x)
+
+#   top_thresh <- cur %>% subset(q_value <= 0.05 & normalized_effect > 0) %>% top_n(nlabel, wt=normalized_effect) %>% .$normalized_effect %>% min
+#   bottom_thresh <- cur %>% subset(q_value <= 0.05 & normalized_effect < 0) %>% top_n(-1*nlabel, wt=normalized_effect) %>% .$normalized_effect %>% max
+
+#   cur$anno <- ifelse(cur$q_value <= 0.05 & cur$normalized_effect >= top_thresh, cur$gene, NA)
+#   cur$anno <- ifelse(cur$q_value <= 0.05 & cur$normalized_effect <= bottom_thresh, cur$gene, cur$anno)
+#   cur$color <- ifelse(cur$q_value > 0.05, 'gray', ifelse(cur$normalized_effect > 0, color1, color2))
+#   cur
+
+# }))
+
+
+# groups <- unique(degs$term)
+# plot_list <- list()
+# for(cluster  in groups){
+
+
+#   print(cluster)
+#   plot_degs <- cur_degs %>% subset(term == cluster)
+
+#   p <- plot_degs  %>%
+#      ggplot(aes(x=normalized_effect, y=-log10(q_value))) +
+#      geom_hline(yintercept=-log10(0.05), linetype='dashed')
+
+#   # plot genes that are Nr4a2 targets
+#   p <- p + ggrastr::rasterise(geom_point(
+#     alpha=0.5,
+#     color=plot_degs %>% .$color
+#   ), dpi=500)
+
+#   p <- p +
+#      geom_point(
+#        inherit.aes=FALSE,
+#        data=subset(plot_degs, !is.na(anno)),
+#        aes(normalized_effect, -log10(q_value)),
+#        fill=subset(plot_degs, !is.na(anno)) %>% .$color,
+#        shape=21, size=3, color='black'
+#      ) +
+#      geom_text_repel(aes(label=anno), color='black', fontface='italic',  min.segment.length=0, max.overlaps=Inf) +
+#      xlim(-1*max(abs(plot_degs$normalized_effect))-0.1, max(abs(plot_degs$normalized_effect))+0.1) +
+#      ggtitle(paste0(cluster)) +
+#      xlab(bquote("Normalized effect size")) +
+#      ylab(bquote("-log"[10]~"(Adj. P-value)")) +
+#      theme(
+#        panel.border = element_rect(color='black', fill=NA, linewidth=1),
+#        panel.grid.major = element_blank(),
+#        axis.line = element_blank(),
+#        plot.title = element_text(hjust = 0.5, vjust=-1),
+#        legend.position='bottom'
+#      )
+
+#     plot_list[[cluster]] <- p
+
+# }
+
+# name <- 'Amylo_Area_log_Gi_GM'
+# out <- paste0(fig_dir, 'volcano_', name, '_visium.pdf')
+
+# pdf(out, width=5, height=5, useDingbats=FALSE)
+# plot_list[[1]]
+# dev.off()
+
+# plot_list <- lapply(plot_list, function(x){
+#   x + theme(
+#     axis.title.x = element_blank(),
+#     axis.title.y = element_blank(),
+#     plot.margin = margin(0,0,0,0),
+#     plot.title = element_text(vjust=-0.2)
+#   )
+# })
+#
+# pdf(out, width=12, height=12, useDingbats=FALSE)
+# wrap_plots(plot_list, ncol=3)
+# dev.off()
+
+```
+
+Correlation of gene expression and amyloid scores 
+
+```{r eval=FALSE}
+
+
+# add a new column to distinguish between white and grey matter
+seurat_human$tissue_type <- ifelse(grepl('WM', as.character(seurat_human$annotation)), 'WM', 'GM')
+
+# load the amylo and the OC DEGs
+degs_amylo <- read.csv(file=paste0(data_dir, 'Amylo_Area_log_Gi_glm_GM_DEGs.csv'))
+degs_oc <- read.csv(file=paste0(data_dir, 'OC_Area_log_Gi_glm_GM_DEGs.csv'))
+
+# # load the old ones :
+# degs_amylo2 <- read.csv(file='../voyager/data/Amyloglo_Score_log_Gi_glm_GM_DEGs.csv')
+# degs_oc2 <- read.csv(file='../voyager/data/OC_Score_log_Gi_glm_GM_DEGs.csv')
+
+# amylo_genes1 <- degs_amylo %>% subset(q_value < 0.05) %>% .$gene
+# amylo_genes2 <- degs_amylo2 %>% subset(q_value < 0.05) %>% .$gene
+
+# oc_genes1 <- degs_oc %>% subset(q_value < 0.05) %>% .$gene
+# oc_genes2 <- degs_oc2 %>% subset(q_value < 0.05) %>% .$gene
+
+
+
+amyloid_samples <- seurat_human@meta.data %>%
+  group_by(Sample) %>%
+  summarise(Mean = mean(Amylo_Area)) %>%
+  filter(Mean != 0) %>% .$Sample %>% as.character
+
+# get the expression matrix:
+expr_matrix  <- GetAssayData(
+  subset(seurat_human, Diagnosis != 'Control' & Sample %in% amyloid_samples & tissue_type == 'GM'),
+  slot='data',
+)
+
+# degs for this cluster
+amylo_genes <- degs_amylo %>% subset(q_value < 0.05) %>% .$gene
+oc_genes <- degs_oc %>% subset(q_value < 0.05) %>% .$gene
+
+# get relevant seurat metadata for this cluster
+cur_meta <- subset(seurat_human@meta.data, Diagnosis != 'Control' & Sample %in% amyloid_samples & tissue_type == 'GM')
+
+# subset expression matrix by the amylo and oc gene
+cur_amylo_expr <- expr_matrix[amylo_genes,rownames(cur_meta)]
+cur_oc_expr <- expr_matrix[oc_genes,rownames(cur_meta)]
+
+# amylo correlation
+temp <- Hmisc::rcorr(t(as.matrix(cur_amylo_expr)), cur_meta$Amylo_Area_log_Gi)
+amylo_cor <- temp$r[amylo_genes,ncol(temp$r)]
+
+# oc correlation
+temp <- Hmisc::rcorr(t(as.matrix(cur_oc_expr)), cur_meta$OC_Area_log_Gi)
+oc_cor <- temp$r[oc_genes,ncol(temp$r)]
+
+cor_df <- data.frame(
+  gene = c(amylo_genes, oc_genes),
+  cor = c(as.numeric(amylo_cor), as.numeric(oc_cor)),
+  type = c(rep('amylo', length(amylo_genes)), rep('oc', length(oc_genes)))
+)
+
+write.csv(cor_df, file=paste0(data_dir, 'amylo_oc_correlation_DEGs.csv'))
+
+
+# write the significant results only to their own file:
+cor_df <- read.csv(file=paste0(data_dir, 'amylo_oc_correlation_DEGs.csv'))
+
+
+
+# load the amylo and the OC DEGs
+degs_amylo <- read.csv(file=paste0(data_dir, 'Amylo_Area_log_Gi_glm_GM_DEGs.csv'))
+degs_oc <- read.csv(file=paste0(data_dir, 'OC_Area_log_Gi_glm_GM_DEGs.csv'))
+amylo_genes <- subset(cor_df, cor > 0 & type == 'amylo') %>% .$gene
+oc_genes <- subset(cor_df, cor > 0 & type == 'oc') %>% .$gene
+
+
+
+degs_amylo %>% subset(q_value < 0.05 & gene_id %in% amylo_genes) %>%
+  write.csv(file=paste0(data_dir, 'Amylo_Area_log_Gi_glm_GM_DEGs_signif.csv'))
+
+degs_oc %>% subset(q_value < 0.05 & gene_id %in% oc_genes) %>%
+  write.csv(file=paste0(data_dir, 'OC_Area_log_Gi_glm_GM_DEGs_signif.csv'))
+
+
+```
+
+# Compute the overlap between OC and Amylo genes:
+
+```{r eval=FALSE}
+
+library(GeneOverlap)
+
+cor_df <- read.csv(file=paste0(data_dir, 'amylo_oc_correlation_DEGs.csv'))
+
+degs_amylo <- read.csv(file=paste0(data_dir, 'Amylo_Area_log_Gi_glm_GM_DEGs.csv'))
+degs_oc <- read.csv(file=paste0(data_dir, 'OC_Area_log_Gi_glm_GM_DEGs.csv'))
+
+
+genome.size <- nrow(seurat_human)
+
+amylo_genes <- cor_df %>% subset(type == 'amylo'  & cor > 0) %>% .$gene
+oc_genes <- cor_df %>% subset(type == 'oc'  & cor > 0) %>% .$gene
+
+cur_overlap <- testGeneOverlap(newGeneOverlap(
+    amylo_genes,
+    oc_genes,
+    genome.size=genome.size
+))
+
+cur_overlap
+
+
+library(eulerr)
+
+overlap_list <- c(
+  'Amylo' = length(setdiff(amylo_genes, oc_genes)),
+  'OC' = length(setdiff(oc_genes, amylo_genes)),
+  'Amylo&OC' =  length(unique(intersect(oc_genes, amylo_genes)))
+)
+
+pdf(paste0(fig_dir, 'amylo_oc_eulerr_overlaps.pdf'), width=4, height=4)
+plot(euler(overlap_list), quantities = TRUE)
+dev.off()
+
+
+```
+
+EnrichR on DEGs
+
+```{r eval=FALSE}
+
+################################################################################
+# Run enrichr
+################################################################################
+
+
+library(enrichR)
+
+dbs <-c('GO_Biological_Process_2021','GO_Cellular_Component_2021','GO_Molecular_Function_2021', 'WikiPathway_2021_Mouse', 'KEGG_2021_Mouse')
+
+cor_df <- read.csv(file=paste0(data_dir, 'amylo_oc_correlation_DEGs.csv'))
+
+degs_amylo <- read.csv(file=paste0(data_dir, 'Amylo_Area_log_Gi_glm_GM_DEGs.csv'))
+degs_oc <- read.csv(file=paste0(data_dir, 'OC_Area_log_Gi_glm_GM_DEGs.csv'))
+
+# get genes that are up / down
+amylo_genes <- subset(cor_df, cor > 0 & type == 'amylo') %>% .$gene
+oc_genes <- subset(cor_df, cor > 0 & type == 'oc') %>% .$gene
+cur_shared <- intersect(amylo_genes, oc_genes)
+amylo_genes_only <- setdiff(amylo_genes, oc_genes)
+oc_genes_only <- setdiff(oc_genes, amylo_genes)
+
+# setup input list for enrichr loop
+input_list <- list(
+  amylo = amylo_genes,
+  oc = oc_genes,
+  shared = cur_shared,
+  amylo_only = amylo_genes_only,
+  oc_only = oc_genes_only
+)
+
+# run enrichr and combine outputs
+enriched_df <- do.call(rbind, lapply(names(input_list), function(x){
+  Sys.sleep(5)
+  print(x)
+  print(length(input_list[[x]]))
+  if(length(input_list[[x]]) > 0){
+    cur_enrich <- enrichr(input_list[[x]], dbs)
+  } else{return(data.frame())}
+  cur_df <- do.call(rbind, lapply(dbs, function(cur_db){
+    df <- cur_enrich[[cur_db]]
+    if(nrow(df) > 1){
+      df$degs <- x;
+      # df$group <- cur_group;
+      df$db <- cur_db
+    }
+    else{df <- data.frame()}
+    print(dim(df))
+    df
+  }))
+}))
+
+enriched_df  %>%
+write.table(file=paste0(data_dir, 'amyloglo_oc_GO_terms_full.tsv'), quote=FALSE, row.names=FALSE, sep='\t')
+
+
+
+enriched_df$ngenes <- unlist(lapply(strsplit(enriched_df$Genes, ';'), function(x){length(x)}))
+
+enriched_df %>%
+  subset(P.value < 0.05 & ngenes >= 2) %>%
+  write.table(
+    file=paste0(data_dir, 'amyloglo_oc_GO_terms_signif.tsv'),
+    quote=FALSE, row.names=FALSE, sep='\t'
+  )
+
+
+################################################################################
+# plot selected go terms as a bar plot
+################################################################################
+
+# helper function to wrap text
+wrapText <- function(x, len) {
+    sapply(x, function(y) paste(strwrap(y, len), collapse = "\n"), USE.NAMES = FALSE)
+}
+
+selected_terms <- read.delim('data/amyloglo_oc_GO_terms_selected.txt', sep='\t', header=1)
+
+#name <- 'shared'
+name <- 'oc_only'
+
+#selected_terms <- subset(selected_terms, degs == 'shared')
+selected_terms <- subset(selected_terms, degs == name)
+
+# remove GO Term ID
+selected_terms$Term <- str_replace(selected_terms$Term, " \\s*\\([^\\)]+\\)", "")
+
+selected_terms <- selected_terms %>%
+  #group_by(module) %>%
+  arrange(Combined.Score)
+
+selected_terms$wrap <- wrapText(selected_terms$Term, 35)
+
+p <- selected_terms  %>%
+  ggplot(aes(x=log(Combined.Score), y=reorder(wrap, Combined.Score)))+
+  geom_bar(stat='identity', position='identity', color='white', fill='grey65') +
+  geom_text(aes(label=Term), x=.1, color='black', size=3.5, hjust='left') +
+  ylab('') + xlab(bquote("log"[10]~"(Enrich)")) +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, NA)) +
+  theme(
+    panel.grid.major=element_blank(),
+    panel.grid.minor=element_blank(),
+    legend.title = element_blank(),
+    axis.ticks.y=element_blank(),
+    axis.text.y=element_blank(),
+    axis.line.y=element_blank(),
+    plot.title = element_text(hjust = 0.5)
+  )
+
+pdf(paste0(fig_dir, 'human_amyloglo_', name,'_GO_terms.pdf'), width= 3, height=4 , useDingbats=FALSE)
+p
+dev.off()
+
+pdf(paste0(fig_dir, 'human_amyloglo_', name,'_GO_terms.pdf'), width= 3, height=3 , useDingbats=FALSE)
+p
+dev.off()
+
+```
+
+
+Overlap with known gene lists
+
+```{r eval=FALSE}
+
+library(GeneOverlap)
+
+
+
+cor_df <- read.csv(file=paste0(data_dir, 'amylo_oc_correlation_DEGs.csv'))
+
+degs_amylo <- read.csv(file=paste0(data_dir, 'Amylo_Area_log_Gi_glm_GM_DEGs.csv'))
+degs_oc <- read.csv(file=paste0(data_dir, 'OC_Area_log_Gi_glm_GM_DEGs.csv'))
+
+
+# get genes that are up / down
+amylo_genes <- subset(cor_df, cor > 0 & type == 'amylo') %>% .$gene
+oc_genes <- subset(cor_df, cor > 0 & type == 'oc') %>% .$gene
+
+
+overlap_df <- do.call(rbind, lapply(names(gene_lists), function(cur_list){
+
+  cur_genes <- gene_lists[[cur_list]]
+
+  cur_overlap_amylo <- testGeneOverlap(newGeneOverlap(
+      cur_genes,
+      amylo_genes,
+      genome.size=nrow(seurat_human)
+  ))
+
+   cur_overlap_oc <- testGeneOverlap(newGeneOverlap(
+      cur_genes,
+      oc_genes,
+      genome.size=nrow(seurat_human)
+  ))
+
+  cur_overlap <- data.frame(
+    'odds.ratio' = c(cur_overlap_amylo@odds.ratio, cur_overlap_oc@odds.ratio),
+    'pval' = c(cur_overlap_amylo@pval, cur_overlap_oc@pval),
+    'Jaccard' = c(cur_overlap_amylo@Jaccard, cur_overlap_oc@Jaccard),
+    'size_set1' = length(cur_genes),
+    'size_set2' = c(length(amylo_genes), length(oc_genes)),
+    'size_intersection' = c(length(cur_overlap_amylo@intersection), length(cur_overlap_oc@intersection)),
+    'size_union' = c(length(cur_overlap_amylo@union), length(cur_overlap_oc@union)),
+    'list' = cur_list,
+    'group' = c('amylo', 'oc')
+  )
+
+  cur_overlap
+
+})) %>% as.data.frame()
+
+overlap_df <- overlap_df %>% 
+  group_by(group) %>%
+  mutate(fdr=p.adjust(pval, method='fdr')) %>%
+  ungroup
+
+
+################################################################################
+# Plot as a lollipop
+################################################################################
+
+overlap_df$shape <- ifelse(overlap_df$fdr < 0.05, 21, 4)
+overlap_df <- overlap_df %>% arrange(odds.ratio, descending=TRUE)
+overlap_df$module <- factor(as.character(overlap_df$module), levels=as.character(overlap_df$module))
+
+mod_colors <- dplyr::select(modules, c(module, color)) %>%
+  distinct
+cp <- mod_colors$color; names(cp) <- mod_colors$module
+
+p <- overlap_df %>%
+  ggplot(aes(y=module, x=odds.ratio, size= size_intersection, color=module)) +
+  geom_segment(aes(y=module, yend=module, x=0, xend=odds.ratio), size=0.5, color='grey') +
+  geom_point() +
+  geom_point(shape=overlap_df$shape, color='black', fill=NA) +
+  scale_color_manual(values=cp, guide='none') +
+  ylab('') + xlab("Odds ratio") +
+  scale_x_continuous(breaks = c(0, 1, 2,3)) +
+  labs(size='Size\nintersection') +
+  ggtitle('Overlap with SFARI genes') +
+
+  theme(
+    panel.border = element_rect(size=1, color='black', fill=NA),
+    axis.line.y = element_blank(),
+    axis.line.x = element_blank(),
+    plot.title = element_text(hjust=0.5, face='plain')
+  )
+
+pdf(paste0(fig_dir, 'sfari_overlap2.pdf'), width=4, height=3.5)
+p
+dev.off()
+
+
+```
+
+Overlap between human and mouse amyloid DEGs 
+
+```{r eval=FALSE}
+
+library(GeneOverlap)
+
+mouse_cor_df <- read.csv('/dfs7/swaruplab/smorabit/analysis/ADDS_2021/visium/5xFAD/amyloid/data/5x_amylo_oc_correlation_DEGs.csv')
+cor_df <- read.csv(file=paste0(data_dir, 'amylo_oc_correlation_DEGs.csv'))
+
+
+
+# get genes that are up / down
+amylo_genes <- subset(cor_df, cor > 0 & type == 'amylo') %>% .$gene
+oc_genes <- subset(cor_df, cor > 0 & type == 'oc') %>% .$gene
+
+
+# convert the mouse genes to human
+
+
+# load mouse <-> human gene name table:
+hg38_mm10_genes <- read.table(
+  "/dfs7/swaruplab/smorabit/resources/hg38_mm10_orthologs_2021.txt",
+  sep='\t',
+  header=TRUE
+)
+colnames(hg38_mm10_genes) <-c('hg38_id', 'mm10_id', 'mm10_name', 'hg38_name')
+hg38_mm10_genes <- dplyr::select(hg38_mm10_genes, c(hg38_name, mm10_name, hg38_id, mm10_id))
+
+hg38_mm10_genes <- subset(hg38_mm10_genes, mm10_name != '' & hg38_name != '')
+
+ix <- match(mouse_cor_df$gene, hg38_mm10_genes$mm10_name)
+mouse_cor_df$gene <- hg38_mm10_genes$hg38_name[ix]
+mouse_cor_df <- mouse_cor_df[!is.na(mouse_cor_df$gene),]
+
+mouse_groups <- unique(mouse_cor_df$group)
+
+x <- 'ctx-upper-layers'
+x <- 'ctx-deep-layers'
+
+overlap_df <- do.call(rbind, lapply(mouse_groups, function(x){
+
+  mouse_amylo_genes <- subset(mouse_cor_df, cor > 0 & group == x & type == 'amylo') %>% .$gene
+  mouse_oc_genes <- subset(mouse_cor_df, cor > 0 & group == x & type == 'oc') %>% .$gene
+
+  cur_overlap_amylo <- testGeneOverlap(newGeneOverlap(
+      mouse_amylo_genes,
+      amylo_genes,
+      genome.size=nrow(seurat_human)
+  ))
+
+   cur_overlap_oc <- testGeneOverlap(newGeneOverlap(
+      mouse_oc_genes,
+      oc_genes,
+      genome.size=nrow(seurat_human)
+  ))
+
+  cur_overlap_amylo@intersection
+  cur_overlap_oc@intersection
+
+  cur_overlap <- data.frame(
+    'odds.ratio' = c(cur_overlap_amylo@odds.ratio, cur_overlap_oc@odds.ratio),
+    'pval' = c(cur_overlap_amylo@pval, cur_overlap_oc@pval),
+    'Jaccard' = c(cur_overlap_amylo@Jaccard, cur_overlap_oc@Jaccard),
+    'size_set1' = c(length(mouse_amylo_genes), length(mouse_oc_genes)),
+    'size_set2' = c(length(amylo_genes), length(oc_genes)),
+    'size_intersection' = c(length(cur_overlap_amylo@intersection), length(cur_overlap_oc@intersection)),
+    'size_union' = c(length(cur_overlap_amylo@union), length(cur_overlap_oc@union)),
+    #'list' = cur_list,
+    'group' = c('amylo', 'oc'),
+    'mouse_group' = x
+  )
+
+  cur_overlap
+
+})) %>% as.data.frame()
+
+overlap_df <- overlap_df %>% 
+  group_by(group) %>%
+  mutate(fdr=p.adjust(pval, method='fdr')) %>%
+  ungroup
+
+
+# significance level:
+overlap_df$Significance <- gtools::stars.pval(overlap_df$fdr)
+overlap_df$Significance <- ifelse(
+  overlap_df$Significance == '.', '',
+  overlap_df$Significance
+)
+
+# plot the results as a heatmap:
+maxval <- 100
+plot_df <- overlap_df
+plot_df$odds.ratio <- ifelse(plot_df$odds.ratio > maxval, maxval, plot_df$odds.ratio)
+plot_df$textcolor <- ifelse(plot_df$odds.ratio > 0.7*maxval, 'white', 'black')
+
+plot_df$mouse_group <- fct_rev(factor(as.character(plot_df$mouse_group)))
+
+p <- plot_df %>%
+  ggplot(aes(x=group, y=mouse_group, fill=odds.ratio)) +
+  geom_tile() +
+  geom_text(label=plot_df$Significance, vjust = 0.72, color=plot_df$textcolor) +
+  scale_fill_gradient(low='white', high='seagreen') +
+  RotatedAxis() +
+  labs(fill = 'Odds ratio') +
+  theme(
+    panel.border = element_rect(fill=NA, color='black', linewidth=1),
+    axis.line.x = element_blank(),
+    axis.line.y = element_blank(),
+    axis.title.x = element_blank(),
+    axis.title.y = element_blank(),
+    #axis.text.x = element_blank(),
+    #axis.ticks.x = element_blank(),
+    #axis.text.y = element_blank(),
+    #axis.ticks.y = element_blank(),
+    plot.margin=margin(0,0,0,0)
+  ) +
+  coord_equal()
+
+
+pdf(paste0(fig_dir, 'mouse_human_overlap_amyloid_heatmap.pdf'), width=5, height=4, useDingbats=FALSE)
+p
+dev.off()
+
+```
+
+Overlap between these genes and hdWGCNA modules 
+
+```{r eval=FALSE}
+
+library(GeneOverlap)
+
+modules <- read.csv(file='~/swaruplab/smorabit/analysis/ADDS_2021/visium/human/hdWGCNA/data/metamodules.csv')
+
+cor_df <- read.csv(file=paste0(data_dir, 'amylo_oc_correlation_DEGs.csv'))
+
+# get genes that are up / down
+amylo_genes <- subset(cor_df, cor > 0 & type == 'amylo') %>% .$gene
+oc_genes <- subset(cor_df, cor > 0 & type == 'oc') %>% .$gene
+
+
+
+overlap_df <- do.call(rbind, lapply(unique(modules$module), function(x){
+
+  cur_module <- subset(modules, module == x) %>% .$gene_name
+
+  cur_overlap_amylo <- testGeneOverlap(newGeneOverlap(
+      cur_module,
+      amylo_genes,
+      genome.size=nrow(seurat_human)
+  ))
+
+   cur_overlap_oc <- testGeneOverlap(newGeneOverlap(
+      cur_module,
+      oc_genes,
+      genome.size=nrow(seurat_human)
+  ))
+
+  cur_overlap <- data.frame(
+    'odds.ratio' = c(cur_overlap_amylo@odds.ratio, cur_overlap_oc@odds.ratio),
+    'pval' = c(cur_overlap_amylo@pval, cur_overlap_oc@pval),
+    'Jaccard' = c(cur_overlap_amylo@Jaccard, cur_overlap_oc@Jaccard),
+    'size_set1' = c(length(cur_module), length(cur_module)),
+    'size_set2' = c(length(amylo_genes), length(oc_genes)),
+    'size_intersection' = c(length(cur_overlap_amylo@intersection), length(cur_overlap_oc@intersection)),
+    'size_union' = c(length(cur_overlap_amylo@union), length(cur_overlap_oc@union)),
+    #'list' = cur_list,
+    'group' = c('amylo', 'oc'),
+    'module' = x
+  )
+
+  cur_overlap
+
+})) %>% as.data.frame()
+
+overlap_df <- overlap_df %>% 
+  group_by(group) %>%
+  mutate(fdr=p.adjust(pval, method='fdr')) %>%
+  ungroup
+
+
+# significance level:
+overlap_df$Significance <- gtools::stars.pval(overlap_df$fdr)
+overlap_df$Significance <- ifelse(
+  overlap_df$Significance == '.', '',
+  overlap_df$Significance
+)
+
+# plot the results as a heatmap:
+maxval <- 100
+plot_df <- overlap_df
+plot_df$odds.ratio <- ifelse(plot_df$odds.ratio > maxval, maxval, plot_df$odds.ratio)
+plot_df$textcolor <- ifelse(plot_df$odds.ratio > 0.7*maxval, 'white', 'black')
+
+#plot_df$mouse_group <- factor(as.character(plot_df$mouse_group))
+
+p <- plot_df %>%
+  ggplot(aes(x=group, y=module, fill=odds.ratio)) +
+  geom_tile() +
+  geom_text(label=plot_df$Significance, vjust = 0.72, color=plot_df$textcolor) +
+  scale_fill_gradient(low='white', high='blue') +
+  RotatedAxis() +
+  labs(fill = 'Odds ratio') +
+  theme(
+    panel.border = element_rect(fill=NA, color='black', linewidth=1),
+    axis.line.x = element_blank(),
+    axis.line.y = element_blank(),
+    axis.title.x = element_blank(),
+    axis.title.y = element_blank(),
+    #axis.text.x = element_blank(),
+    #axis.ticks.x = element_blank(),
+    #axis.text.y = element_blank(),
+    #axis.ticks.y = element_blank(),
+    plot.margin=margin(0,0,0,0)
+  ) +
+  coord_equal()
+
+
+pdf(paste0(fig_dir, 'human_hdWGCNA_overlap_amyloid_heatmap.pdf'), width=5, height=4, useDingbats=FALSE)
+p
+dev.off()
+
+# m11 genes overlap:
+m11_genes <- subset(modules, module == 'M11') %>% .$gene_name
+intersect(m11_genes, amylo_genes)
+intersect(m11_genes, oc_genes)
+
+```
+
+Overlap with the amylo genes and the DEGs
+
+```{r eval=FALSE}
+
+
+library(GeneOverlap)
+
+
+cor_df <- read.csv(file=paste0(data_dir, 'amylo_oc_correlation_DEGs.csv'))
+
+# get genes that are up / down
+amylo_genes <- subset(cor_df, cor > 0 & type == 'amylo') %>% .$gene
+oc_genes <- subset(cor_df, cor > 0 & type == 'oc') %>% .$gene
+
+degs_adds <- read.csv("/dfs7/swaruplab/emiyoshi/Visium_ADDS/DEGs/DSAD_vs_Control/DSAD_vs_Control_all.csv")
+degs_ead <- read.csv("/dfs7/swaruplab/emiyoshi/Visium_ADDS/DEGs/earlyAD_vs_Control/earlyAD_vs_Control_all.csv")
+degs_lad <- read.csv("/dfs7/swaruplab/emiyoshi/Visium_ADDS/DEGs/lateAD_vs_Control/lateAD_vs_Control_all.csv")
+
+adds_genes <- degs_adds %>% subset(p_val_adj < 0.05 & abs(avg_log2FC) > 0.25) %>% .$gene %>% unique
+lad_genes <- degs_lad %>% subset(p_val_adj < 0.05 & abs(avg_log2FC) > 0.25) %>% .$gene %>% unique
+ead_genes <- degs_ead %>% subset(p_val_adj < 0.05 & abs(avg_log2FC) > 0.25) %>% .$gene %>% unique
+deg_lists <- list("ADDS" = adds_genes, "LAD" = lad_genes, "EAD" = ead_genes)
+
+cur_gene <- 'CST3'
+cur_gene <- 'CLU'
+lapply(deg_lists, function(x){
+  cur_gene %in% x
+})
+
+plot_df <- data.frame()
+for(cur_group in names(deg_lists)){
+  cur_degs <- deg_lists[[cur_group]]
+
+  cur_oc <- intersect(oc_genes, cur_degs)
+  cur_amylo <- intersect(amylo_genes, cur_degs)
+
+  cur_df <- data.frame(
+    n = c(
+      length(cur_oc), length(oc_genes) - length(cur_oc),
+      length(cur_amylo), length(amylo_genes) - length(cur_amylo)
+    ),
+    group = cur_group,
+    genes = c('oc', 'oc', 'amylo', 'amylo'),
+    overlap = c('yes', 'no', 'yes', 'no')
+  )
+
+  plot_df <- rbind(plot_df, cur_df)
+
+}
+
+plot_df$group <- factor(plot_df$group, levels=c('EAD', 'LAD', 'ADDS'))
+
+
+p <- plot_df %>%
+  ggplot(aes(x = n, y=group, fill=overlap)) + 
+  geom_bar(position='stack', stat='identity') + 
+  # scale_fill_manual(values=amylo_cp) + 
+  geom_text(aes(label=n), position = position_stack(vjust=0.5)) +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, NA)) + 
+  theme(
+    axis.line.y = element_blank(),
+    axis.title.y = element_blank()
+  ) + 
+  xlab(bquote("N"[genes])) + 
+  facet_wrap(~genes, scales='free', ncol=1) + NoLegend()
+#      ylab(bquote("-log"[10]~"(Adj. P-value)")) +
+
+pdf(paste0(fig_dir, 'amyloid_genes_degs_overlap_barchart.pdf'), width=3, height=3.5, useDingbats=FALSE)
+p
+dev.off()
+
+
+
+intersect(amylo_genes, adds_genes)
+
+
+
+
+
+
+intersect(amylo_genes, tmp)
+intersect(oc_genes, tmp)
+
+
+```
+
+Plot a word cloud of the human amylo genes 
+
+```{r eval=FALSE}
+
+library(ggwordcloud)
+
+cor_df <- read.csv(file=paste0(data_dir, 'amylo_oc_correlation_DEGs.csv'))
+
+degs_amylo <- read.csv(file=paste0(data_dir, 'Amylo_Area_log_Gi_glm_GM_DEGs.csv'))
+degs_oc <- read.csv(file=paste0(data_dir, 'OC_Area_log_Gi_glm_GM_DEGs.csv'))
+
+
+amylo_genes <- subset(cor_df, cor > 0 & type == 'amylo') %>% .$gene
+
+
+plot_df <- subset(degs_amylo, gene_id %in% amylo_genes)
+plot_df$value <- -log10(plot_df$q_value)
+max_val <- max(plot_df$value[plot_df$value != Inf])
+plot_df$value <- ifelse(plot_df$value == Inf, max_val, plot_df$value)
+
+p <- ggplot(plot_df, aes(label=gene_id, size=value)) + 
+  geom_text_wordcloud() + 
+  theme_minimal()
+
+data("love_words_small")
+p <- ggplot(love_words_small, aes(label = word, size = speakers)) +
+  geom_text_wordcloud() +
+  theme_minimal()
+
+
+pdf(paste0(fig_dir, 'amyloid_DEGS_wordcloud.pdf'), width=10, height=10, useDingbats=FALSE)
+p
+dev.off()
+
+
+```
+
+Feature Plots of all the amylo + OC shared genes in the human dataset for the representative samples
+```{r eval=FALSE}
+
+# representative samples
+human_rep_samples <- c(
+  'Dec_13_2021_Human5', 'Dec_20_2021_Human1',
+  'Dec_13_2021_Human6', 'Oct_2021_6',
+  'Dec_13_2021_Human3', 'Dec_13_2021_Human7',
+  'Nov_24_2021_VisiumHuman_12', 'Dec_13_2021_Human8'
+)
+
+
+amylo_genes <- subset(cor_df, cor > 0 & type == 'amylo') %>% .$gene
+oc_genes <- subset(cor_df, cor > 0 & type == 'oc') %>% .$gene
+feats <- intersect(amylo_genes, oc_genes)
+
+feats <- setdiff(oc_genes, amylo_genes)
+
+for(cur_gene in feats){
+  p <- SampleFeaturePlot(
+    seurat_human,
+    feature=cur_gene,
+    samples_to_plot = human_rep_samples,
+    sample_labels = c("Diagnosis", "Sex", 'Age'),
+    ncol = 10,
+    raster=TRUE,
+    plot_max = 'q99',
+    plot_min = 'q5',
+    colfunc = inferno,
+    rev_colors=TRUE,
+    dpi=800,
+    combine=FALSE
+  )
+
+  p <- lapply(p, function(x){
+    x + theme(
+      plot.title = element_text(face='bold', size=15, vjust=-1),
+      plot.margin = margin(0,0,0,0)
+    ) + labs(fill = cur_gene)
+  })
+
+  patch <- wrap_plots(p, ncol=8, widths=1, heights=1) + plot_layout(guides='collect')
+
+  pdf(paste0(fig_dir, 'amyloid_genes/', cur_gene, '_featureplot.pdf'), width=16, height=3)
+#  print(p)
+  print(patch)
+  dev.off()
+
+}
+
+```
+
+
+Plot a heatmap of the amyloid Genes 
+
+```{r eval=FALSE}
+
+amylo_genes <- subset(cor_df, cor > 0 & type == 'amylo') %>% .$gene
+oc_genes <- subset(cor_df, cor > 0 & type == 'oc') %>% .$gene
+feats <- unique(union(amylo_genes, oc_genes))
+
+
+# read combined
+degs <- read.csv(paste0('../DEGs/data/human_visium_cluster_markers.csv'))
+group_levels <- levels(seurat_human$annotation)
+degs$group <- factor(as.character(degs$group), levels=group_levels)
+
+
+
+plot_genes <- degs %>%
+  subset(gene %in% feats) %>%
+  arrange(group) %>%
+  subset(p_val_adj <= 0.05) %>%
+  group_by(group) %>%
+  .$gene %>% unique
+
+
+# set random seed
+set.seed(42)
+
+seurat_human$barcode <- colnames(seurat_human)
+temp <- table(seurat_human@meta.data$annotation)
+
+df <- data.frame()
+for(i in 1:length(temp)){
+
+  if(temp[[i]] < 5000){
+    cur_df <- seurat_human@meta.data %>% subset(annotation == names(temp)[i])
+  } else{
+    cur_df <- seurat_human@meta.data %>% subset(annotation == names(temp)[i]) %>% sample_n(5000)
+  }
+  df <- rbind(df, cur_df)
+}
+
+seurat_human <- ScaleData(seurat_human, features=plot_genes)
+
+
+p <- DoHeatmap(
+  seurat_human %>% subset(barcode %in% df$barcode),
+  features=unlist(plot_genes),
+  group.by='annotation',
+  group.colors = human_cp,
+  raster=TRUE, slot='scale.data'
+) + theme(
+  axis.text.y = element_text(face='italic', size=3)
+)
+
+pdf(paste0(fig_dir, 'amyloid_genes_heatmap.pdf'), width=12, height=8, useDingbats=FALSE)
+p
+dev.off()
+
+
+
+```
+

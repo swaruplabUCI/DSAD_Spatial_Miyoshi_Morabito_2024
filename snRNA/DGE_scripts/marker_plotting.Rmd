@@ -1,0 +1,515 @@
+
+Load ADDS Seurat data:
+
+```{r eval=FALSE}
+# conda activate cicero
+
+library(Seurat)
+library(tidyverse)
+library(cowplot)
+library(Matrix)
+library(viridis)
+library(harmony)
+library(ggpubr)
+library(patchwork)
+library(RColorBrewer)
+library(ggrepel)
+library(tictoc)
+
+
+theme_set(theme_cowplot())
+colfunc <- colorRampPalette(rev(brewer.pal(9, 'Purples' )[2:9]))
+setwd("/dfs7/swaruplab/smorabit/analysis/ADDS_2021/splitseq/integration/")
+
+# directories
+data_dir <- "data/"
+fig_dir <- 'figures/'
+
+umap_theme <- theme(
+  axis.line=element_blank(),
+  axis.text.x=element_blank(),
+  axis.text.y=element_blank(),
+  axis.ticks=element_blank(),
+  axis.title.x=element_blank(),
+  axis.title.y=element_blank(),
+  panel.background=element_blank(),
+  panel.border=element_blank(),
+  panel.grid.major=element_blank(),
+  panel.grid.minor=element_blank(),
+  plot.background=element_blank(),
+  plot.title=element_text(hjust=0.5)
+)
+
+# re-load integrated
+seurat_obj <- readRDS(file="/dfs7/swaruplab/smorabit/analysis/ADDS_2021/splitseq/integration/data/ADDS_AD_integrated.rds" )
+
+seurat_adds <- readRDS(file="/dfs7/swaruplab/smorabit/analysis/ADDS_2021/splitseq/integration/data/ADDS_integrated.rds" )
+
+tic(); dim(subset(seurat_adds, cell_type == 'ASC')); toc()
+
+# re-load ADDS seurat object:
+seurat_AD <- readRDS(file="/dfs7/swaruplab/smorabit/analysis/ADDS_2021/splitseq/integration/data/AD_integrated.rds" )
+
+var_df <- read.delim(file = "/dfs7/swaruplab/smorabit/analysis/ADDS_2021/splitseq/integration/data/ADDS_subclusters_var.tsv", sep='\t')
+
+VariableFeatures(seurat_adds) <- var_df$X
+VariableFeatures(seurat_AD) <- var_df$X
+VariableFeatures(seurat_obj) <- var_df$X
+
+# color scheme:
+color_df <- read.csv(file='/dfs7/swaruplab/smorabit/analysis/ADDS_2021/splitseq/integration/data/cell_identity.csv')
+
+group_levels <- c(
+  'EX L2', 'EX L2-3', 'EX L3-5', 'EX L5', 'EX L5-6', 'EX L6',
+  'INH VIP+', 'INH', 'INH LAMP5+', 'INH PVALB+', 'INH SST+',
+  'ASC1', 'ASC2', 'ASC3', 'ASC4',
+  'MG1', 'MG2',
+  'ODC1', 'ODC2', 'ODC3',
+  'OPC1', 'OPC2', 'OPC3',
+  'END Arterial', 'END Capillary',
+  'T-Pericyte', 'M-Pericyte', 'SMC',
+  'Perivascular Fibroblast', 'Meningeal Fibroblast'
+)
+color_df$group <- factor(as.character(color_df$group), levels=group_levels)
+color_df <- arrange(color_df, group)
+
+seurat_obj$cell_identity <- factor(
+  as.character(seurat_obj$cell_identity),
+  levels = group_levels
+)
+
+seurat_AD$cell_identity <- factor(
+  as.character(seurat_AD$cell_identity),
+  levels = group_levels
+)
+
+seurat_adds$cell_identity <- factor(
+  as.character(seurat_adds$cell_identity),
+  levels = group_levels
+)
+
+seurat_obj@misc$color_scheme <- color_df
+
+
+
+```
+
+
+Combine individual DEG tables into one big table:
+
+```{r eval=FALSE}
+
+# DEGs for clusters
+DEG_dir <- "/dfs7/swaruplab/smorabit/analysis/ADDS_2021/splitseq/integration/DEGs/cluster_markers/"
+DEG_tests <- dir(DEG_dir)
+
+# combine  all tests into one table:
+combined <- Reduce(rbind, lapply(dir(DEG_dir), function(file){
+  read.csv(paste0(DEG_dir, file))
+}))
+
+# write full table
+write.csv(combined, file=paste0('/dfs7/swaruplab/smorabit/analysis/ADDS_2021/splitseq/integration/DEGs/combined/cluster_markers.csv'), quote=FALSE, row.names=FALSE)
+
+```
+
+Marker gene heatmap
+
+```{r eval=FALSE}
+
+seurat_adds <- ScaleData(seurat_adds)
+seurat_AD <- ScaleData(seurat_AD)
+
+
+# read combined
+degs <- read.csv(paste0('/dfs7/swaruplab/smorabit/analysis/ADDS_2021/splitseq/integration/DEGs/combined/cluster_markers.csv'))
+group_levels <- levels(seurat_obj$cell_identity)
+degs$group <- factor(as.character(degs$group), levels=group_levels)
+
+
+n_degs <- 5
+plot_genes <- degs %>%
+  arrange(group) %>%
+  subset(p_val_adj <= 0.05) %>%
+  group_by(group) %>%
+  top_n(n_degs, wt=avg_log2FC)  %>%
+  .$gene
+
+
+# set random seed
+set.seed(42)
+
+seurat_AD$barcode <- colnames(seurat_AD)
+temp <- table(seurat_AD@meta.data$cell_identity)
+
+df <- data.frame()
+for(i in 1:length(temp)){
+
+  if(temp[[i]] < 1000){
+    cur_df <- seurat_AD@meta.data %>% subset(cell_identity == names(temp)[i])
+  } else{
+    cur_df <- seurat_AD@meta.data %>% subset(cell_identity == names(temp)[i]) %>% sample_n(1000)
+  }
+  df <- rbind(df, cur_df)
+}
+
+p <- DoHeatmap(
+  seurat_AD %>% subset(barcode %in% df$barcode),
+  features=unlist(plot_genes),
+  group.by='cell_identity',
+  group.colors = color_df$colour,
+  raster=TRUE, slot='scale.data'
+) + theme(
+  axis.text.y = element_text(face='italic', size=3)
+)
+
+pdf(paste0(fig_dir, 'cluster_marker_gene_heatmap_AD.pdf'), width=12, height=8, useDingbats=FALSE)
+p
+dev.off()
+
+
+
+
+# set random seed
+set.seed(42)
+
+seurat_adds$barcode <- colnames(seurat_adds)
+temp <- table(seurat_adds@meta.data$cell_identity)
+
+df <- data.frame()
+for(i in 1:length(temp)){
+
+  if(temp[[i]] < 1000){
+    cur_df <- seurat_adds@meta.data %>% subset(cell_identity == names(temp)[i])
+  } else{
+    cur_df <- seurat_adds@meta.data %>% subset(cell_identity == names(temp)[i]) %>% sample_n(1000)
+  }
+  df <- rbind(df, cur_df)
+}
+
+p <- DoHeatmap(
+  seurat_adds %>% subset(barcode %in% df$barcode),
+  features=unlist(plot_genes),
+  group.by='cell_identity',
+  group.colors = color_df$colour,
+  raster=TRUE, slot='scale.data'
+) + theme(
+  axis.text.y = element_text(face='italic', size=3)
+)
+
+pdf(paste0(fig_dir, 'cluster_marker_gene_heatmap_adds.pdf'), width=12, height=8, useDingbats=FALSE)
+p
+dev.off()
+
+```
+
+subcluster marker heatmap
+
+```{r eval=FALSE}
+
+# set random seed
+set.seed(42)
+
+cur_celltype <- 'ASC'; n_degs <- 15; n_cells <- 3000
+cur_celltype <- 'INH'; n_degs <- 10; n_cells <- 3000
+cur_celltype <- 'EX'; n_degs <- 15; n_cells <- 5000
+cur_celltype <- 'MG'; n_degs <- 25; n_cells <- 3000
+cur_celltype <- 'OPC'; n_degs <- 25; n_cells <- 3000
+cur_celltype <- 'ODC'; n_degs <- 25; n_cells <- 10000
+cur_celltype <- 'VASC'; n_degs <- 10; n_cells <- 1000
+
+
+# DEGs for clusters
+DEG_dir <- paste0("/dfs7/swaruplab/smorabit/analysis/ADDS_2021/splitseq/integration/DEGs/subclusters/", cur_celltype, '/')
+DEG_tests <- dir(DEG_dir)
+
+# combine  all tests into one table:
+degs <- Reduce(rbind, lapply(dir(DEG_dir), function(file){
+  read.csv(paste0(DEG_dir, file))
+}))
+
+cur_seurat <- subset(seurat_AD, cell_type == cur_celltype)
+# cur_seurat <- subset(seurat_adds, cell_type == cur_celltype)
+#cur_seurat <- subset(seurat_adds, cell_type %in% c('FBR', 'END', 'PER', 'SMC'))
+cur_seurat <- subset(seurat_AD, cell_type %in% c('FBR', 'END', 'PER', 'SMC'))
+
+cur_seurat <- ScaleData(cur_seurat, features=unique(degs$gene))
+
+
+plot_genes <- degs %>%
+  arrange(group) %>%
+  subset(p_val_adj <= 0.05) %>%
+  group_by(group) %>%
+  top_n(n_degs, wt=avg_log2FC)  %>%
+  .$gene
+
+
+
+cur_seurat$barcode <- colnames(cur_seurat)
+temp <- table(cur_seurat@meta.data$cell_identity)
+
+df <- data.frame()
+for(i in 1:length(temp)){
+
+  if(temp[[i]] < n_cells){
+    cur_df <- cur_seurat@meta.data %>% subset(cell_identity == names(temp)[i])
+  } else{
+    cur_df <- cur_seurat@meta.data %>% subset(cell_identity == names(temp)[i]) %>% sample_n(n_cells)
+  }
+  df <- rbind(df, cur_df)
+}
+
+p <- DoHeatmap(
+  cur_seurat %>% subset(barcode %in% df$barcode),
+  features=unlist(plot_genes),
+  group.by='cell_identity',
+  raster=TRUE, slot='scale.data'
+) + theme(
+  axis.text.y = element_text(face='italic', size=3)
+)
+
+pdf(paste0(fig_dir, cur_celltype, '_subcluster_marker_gene_heatmap_AD.pdf'), width=6, height=4, useDingbats=FALSE)
+p
+dev.off()
+
+```
+
+
+
+
+
+
+
+
+
+
+Old:
+
+
+Make a new Seurat object with just the FC
+
+```{r eval=FALSE}
+
+s_obj <- subset(seurat_obj, Region == 'FCX')
+saveRDS(s_obj, "/dfs7/swaruplab/smorabit/analysis/ADDS_2021/splitseq/data/ADDS_integrated_scvi_FCX.rds")
+
+```
+
+Combine individual DEG tables into one big table:
+
+```{r eval=FALSE}
+
+# DEGs for clusters
+DEG_dir <- "/dfs7/swaruplab/smorabit/analysis/ADDS_2021/splitseq/DEGs/cluster_markers/"
+DEG_tests <- dir(DEG_dir)
+
+# combine  all tests into one table:
+combined <- Reduce(rbind, lapply(dir(DEG_dir), function(file){
+  read.csv(paste0(DEG_dir, file))
+}))
+
+# write full table
+write.csv(combined, file=paste0('DEGs/data/cluster_markers.csv'), quote=FALSE, row.names=FALSE)
+
+
+
+
+# DEGs for clusters
+DEG_dir <- "/dfs7/swaruplab/smorabit/analysis/ADDS_2021/splitseq/DEGs/celltype_markers/"
+DEG_tests <- dir(DEG_dir)
+
+# combine  all tests into one table:
+combined <- Reduce(rbind, lapply(dir(DEG_dir), function(file){
+  read.csv(paste0(DEG_dir, file))
+}))
+
+# write full table
+write.csv(combined, file=paste0('/dfs7/swaruplab/smorabit/analysis/ADDS_2021/splitseq/DEGs/data/celltype_markers.csv'), quote=FALSE, row.names=FALSE)
+
+
+# DEGs for clusters
+DEG_dir <- "/dfs7/swaruplab/smorabit/analysis/ADDS_2021/splitseq/DEGs/DSAD_vs_Control_celltype/"
+DEG_tests <- dir(DEG_dir)
+
+# combine  all tests into one table:
+combined <- Reduce(rbind, lapply(dir(DEG_dir), function(file){
+  read.csv(paste0(DEG_dir, file))
+}))
+
+# write full table
+write.csv(combined, file=paste0('/dfs7/swaruplab/smorabit/analysis/ADDS_2021/splitseq/DEGs/data/DSAD_vs_Control_celltype_DEGs_full.csv'), quote=FALSE, row.names=FALSE)
+
+
+```
+
+Make marker gene heatmap:
+
+```{r eval=FALSE}
+
+# read combined
+degs <- read.csv(paste0('DEGs/data/cluster_markers.csv'))
+degs$group <- factor(
+  degs$group,
+  levels = 1:15
+)
+
+
+n_degs <- 5
+plot_genes <- degs %>%
+  arrange(group) %>%
+  subset(p_val_adj <= 0.05) %>%
+  group_by(group) %>%
+  top_n(n_degs, wt=avg_log2FC)  %>%
+  .$gene
+
+
+# set random seed
+set.seed(42)
+
+seurat_obj$barcode <- colnames(seurat_obj)
+temp <- table(seurat_obj@meta.data$cell_identity)
+
+df <- data.frame()
+for(i in 1:length(temp)){
+
+  if(temp[[i]] < 500){
+    cur_df <- seurat_obj@meta.data %>% subset(cell_identity == names(temp)[i])
+  } else{
+    cur_df <- seurat_obj@meta.data %>% subset(cell_identity == names(temp)[i]) %>% sample_n(500)
+  }
+  df <- rbind(df, cur_df)
+}
+
+p <- DoHeatmap(
+  seurat_obj %>% subset(barcode %in% df$barcode),
+  features=unlist(plot_genes),
+  group.by='cell_identity',
+  raster=TRUE, slot='scale.data'
+) + theme(
+  axis.text.y = element_text(face='italic')
+) + NoLegend()
+
+pdf(paste0(fig_dir, 'marker_gene_heatmap.pdf'), width=12, height=12, useDingbats=FALSE)
+p
+dev.off()
+
+```
+
+
+cluster marker gene dotplots:
+
+```{r eval=FALSE}
+
+degs <- read.csv(paste0('DEGs/data/cluster_markers.csv'))
+degs$group <- factor(
+  degs$group,
+  levels = 1:15
+)
+
+clusters <- 'cell_identity'
+name <- 'cluster_markers'
+
+################################################################################
+# Dot Plot of top 20 genes
+################################################################################
+library(RColorBrewer)
+
+dir.create(paste0(fig_dir, name))
+dir.create(paste0(fig_dir, name, '/dotplots/'))
+
+colfunc <- colorRampPalette(c(rev(brewer.pal(9, 'Purples' )[2:9]), 'white'))
+
+
+for(cur_group in unique(degs$group)){
+
+  print(cur_group)
+  genes <- degs %>% subset(group == cur_group) %>% top_n(20, wt=avg_log2FC) %>% .$gene
+
+
+  # dimplot highlighting the current group:
+  umap_plot <- DimPlot(seurat_obj,group.by=clusters, cells.highlight=colnames(seurat_obj)[seurat_obj@meta.data[,clusters] == cur_group], label=TRUE) + NoLegend() + umap_theme+  ylab('') + xlab('') + ggtitle('')
+
+  p <- DotPlot(seurat_obj, features=genes, group.by=clusters, dot.min=0.15 ) +
+    RotatedAxis() +
+      scale_color_gradientn(
+      colors=rev(colfunc(256)),
+      guide = guide_colorbar(barwidth=0.5, barheight=20, ticks=FALSE, label=FALSE)
+  ) +
+    ylab('') + xlab('')
+
+  pdf(paste0(fig_dir, name, '/dotplots/', gsub(' ', '_',  cur_group), '_top_genes.pdf'), width=12, height=6, useDingbats=FALSE)
+  patch <- umap_plot + p + plot_layout(widths=c(1,2))
+  print(patch)
+  dev.off()
+}
+
+
+```
+
+Select representative samples to plot
+
+From Emily:
+
+4mo = slide 2 A1 (V111A06-322_A1_crop.nd2)
+6mo = slide 15 A1 (V11A06-320_A1_crop.nd2)
+8mo = slide 19 A1 (V11A06-320_A1_crop.nd2)
+12mo = slide 16  (V11A13-386_C1_crop.nd2)
+
+```{r eval=FALSE}
+
+
+table(seurat_obj$SAMPLE, seurat_obj$Condition)
+> table(seurat_obj$SAMPLE, seurat_obj$Condition)
+
+
+
+markers <- c('Csf1r', 'Aqp4', 'Mobp', 'Pdgfra', 'Slc17a7', 'Gad2')
+
+
+pdf(paste0(fig_dir, 'marker_genes.pdf'), width=12, height=8, useDingbats=FALSE)
+for(gene in markers){
+
+  p1 <- FeaturePlot(seurat_obj, features=gene, max.cutoff='q99', order=TRUE) +
+    scale_color_gradientn(colors=colfunc(256), guide = guide_colorbar(barwidth=15, barheight=0.5, ticks=FALSE)) +
+    umap_theme + theme(legend.position='bottom')
+
+  plot_list <- list()
+  for(sample in unique(seurat_obj$SampleID)){
+    cur <- subset(seurat_obj, SampleID == sample)
+    cur_condition <- as.character(unique(cur$Condition))
+    cur_image <- names(cur@images)[sapply(names(cur@images), function(x){nrow(cur@images[[x]]@coordinates) > 0})]
+    cur@images <- list(cur_image = cur@images[[cur_image]])
+    plot_list[[sample]] <- SpatialFeaturePlot(cur, features=gene) + NoLegend() +
+      ggtitle(paste0(sample, ' (',cur_condition, ')'))
+  }
+  print(p1 | wrap_plots(plot_list, ncol=2) + plot_layout(widths=c(1,1)))
+}
+dev.off()
+
+```
+
+load Emily's image analysis file:
+
+Note: this file has the mu symbol in the header so I had to go into excel and change the column names and save as a.csv
+
+Idea: Can we figure out distance between the different plaques?
+Try using voronoi from deldir package.
+
+```{r eval=FALSE}
+
+image_df <- read.csv("~/swaruplab/smorabit/analysis/ADDS_2021/visium/5xFAD/data/V11A06-320_A1_crop.csv")
+
+image_df$BinaryID <- ifelse(
+  image_df$BinaryID == "General Analysis Amyloid Loc Mouse (Amylo)", 'Amylo', 'OC'
+)
+
+p <- ggplot(image_df, aes(x=CentreX, y=CentreY, size=Area, color = BinaryID)) +
+  geom_point(alpha=0.5) +
+  umap_theme +
+  ggtitle("Test image analysis")
+
+pdf(paste0(fig_dir, 'test_image_analysis.pdf'), width=5, height=5)
+p
+dev.off()
+
+```

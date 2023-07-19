@@ -1,0 +1,183 @@
+
+```{r eval=FALSE}
+
+library(Seurat)
+library(tidyverse)
+library(cowplot)
+library(Matrix)
+library(viridis)
+library(harmony)
+library(ggpubr)
+library(patchwork)
+library(RColorBrewer)
+library(ggrepel)
+library(CellTrek)
+
+theme_set(theme_cowplot())
+colfunc <- colorRampPalette(rev(brewer.pal(9, 'Purples' )[2:9]))
+setwd("/dfs7/swaruplab/smorabit/analysis/ADDS_2021/splitseq/integration/")
+
+# directories
+data_dir <- "data/"
+fig_dir <- 'figures/'
+
+umap_theme <- theme(
+  axis.line=element_blank(),
+  axis.text.x=element_blank(),
+  axis.text.y=element_blank(),
+  axis.ticks=element_blank(),
+  axis.title.x=element_blank(),
+  axis.title.y=element_blank(),
+  panel.background=element_blank(),
+  panel.border=element_blank(),
+  panel.grid.major=element_blank(),
+  panel.grid.minor=element_blank(),
+  plot.background=element_blank(),
+  plot.title=element_text(hjust=0.5)
+)
+
+# re-load integrated
+seurat_obj <- readRDS(file="/dfs7/swaruplab/smorabit/analysis/ADDS_2021/splitseq/integration/data/ADDS_AD_integrated.rds" )
+
+seurat_adds <- readRDS(file="/dfs7/swaruplab/smorabit/analysis/ADDS_2021/splitseq/integration/data/ADDS_integrated.rds" )
+
+tic(); dim(subset(seurat_adds, cell_type == 'ASC')); toc()
+
+# re-load ADDS seurat object:
+seurat_AD <- readRDS(file="/dfs7/swaruplab/smorabit/analysis/ADDS_2021/splitseq/integration/data/AD_integrated.rds" )
+
+# add colors
+color_df <- read.csv(file=paste0(data_dir, 'cell_identity.csv'))
+seurat_obj@misc$color_scheme <- color_df
+
+cluster_colors <- color_df$colour; names(cluster_colors) <- color_df$group
+
+
+
+```
+
+Violin plots for QC
+
+```{r eval=FALSE}
+
+fig_dir <- 'figures/QC/'
+dir.create(fig_dir)
+
+
+
+################################################################################
+# nUMI
+################################################################################
+
+
+median_umi <- seurat_adds@meta.data %>% subset(Region=='FCX') %>% .$nCount_RNA %>% median
+
+p1 <- VlnPlot(
+  seurat_adds %>% subset(Region == 'FCX'),
+  group.by = 'SampleID', features='nCount_RNA',
+  pt.size=0
+) +
+  geom_boxplot(width=.25, fill='white', outlier.shape=NA) +
+  NoLegend() +
+  scale_y_continuous(labels=scales::comma) +
+  ylab(expression(italic(N)[UMI])) +
+  theme(axis.title.x = element_blank()) +
+  ggtitle(paste0('FCX Samples, median UMI = ', median_umi))
+
+# PCC
+median_umi <- seurat_adds@meta.data %>% subset(Region=='PCC') %>% .$nCount_RNA %>% median
+
+p2 <- VlnPlot(
+  seurat_adds %>% subset(Region == 'PCC'),
+  group.by = 'SampleID', features='nCount_RNA',
+  pt.size=0
+) +
+  geom_boxplot(width=.25, fill='white', outlier.shape=NA) +
+  NoLegend() +
+  scale_y_continuous(labels=scales::comma) +
+  ylab(expression(italic(N)[UMI])) +
+  theme(axis.title.x = element_blank()) +
+  ggtitle(paste0('PCC Samples, median UMI = ', median_umi))
+
+
+pdf(paste0(fig_dir, 'vln_nCount_RNA_splitseq.pdf'), width=10, height=6)
+p1 / p2
+dev.off()
+
+
+################################################################################
+# nGene
+################################################################################
+median_umi <- seurat_adds@meta.data %>% subset(Region=='FCX') %>% .$nFeature_RNA %>% median
+
+p1 <- VlnPlot(
+  seurat_adds %>% subset(Region == 'FCX'),
+  group.by = 'SampleID', features='nFeature_RNA',
+  pt.size=0
+) +
+  geom_boxplot(width=.25, fill='white', outlier.shape=NA) +
+  NoLegend() +
+  scale_y_continuous(labels=scales::comma) +
+  ylab(expression(italic(N)[genes])) +
+  theme(axis.title.x = element_blank()) +
+  ggtitle(paste0('FCX Samples, median genes = ', median_umi))
+
+# PCC
+median_umi <- seurat_adds@meta.data %>% subset(Region=='PCC') %>% .$nFeature_RNA %>% median
+
+p2 <- VlnPlot(
+  seurat_adds %>% subset(Region == 'PCC'),
+  group.by = 'SampleID', features='nFeature_RNA',
+  pt.size=0
+) +
+  geom_boxplot(width=.25, fill='white', outlier.shape=NA) +
+  NoLegend() +
+  scale_y_continuous(labels=scales::comma) +
+  ylab(expression(italic(N)[genes])) +
+  theme(axis.title.x = element_blank()) +
+  ggtitle(paste0('PCC Samples, median genes = ', median_umi))
+
+
+pdf(paste0(fig_dir, 'vln_nFeature_RNA_splitseq.pdf'), width=10, height=6)
+p1 / p2
+dev.off()
+
+
+################################################################################
+# number of cells in each cluster
+################################################################################
+
+df <- as.data.frame(table(seurat_obj$cell_identity))
+
+p <- ggplot(df, aes(x=reorder(Var1, Freq), y=Freq, fill=Var1, )) +
+  geom_bar(stat='identity') +
+  geom_text(aes(label=scales::comma(Freq)),  color="black", size=3.5, hjust='inward') +
+  scale_y_continuous(labels=scales::comma) +
+  scale_fill_manual(values=cluster_colors) +
+  coord_flip() + NoLegend() + RotatedAxis() + xlab('') + ylab('') +
+  theme(
+    plot.title = element_text(hjust = 0.5),
+    panel.grid.minor=element_blank(),
+    panel.grid.major=element_blank(),
+    axis.ticks.y=element_blank(),
+    axis.ticks.x=element_blank(),
+    axis.title.x=element_blank(),
+    axis.line=element_blank(),
+    axis.text.x = element_blank()
+  )
+
+pdf(paste0(fig_dir, 'barplot_nCells_splitseq_celltypes.pdf'), width=4, height=6)
+p
+dev.off()
+
+
+
+```
+
+gene featureplots for selected genes
+
+```{r eval=FALSE}
+
+
+
+```

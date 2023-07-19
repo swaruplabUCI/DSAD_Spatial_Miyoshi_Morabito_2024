@@ -1,0 +1,149 @@
+# Load libraries and visium samples
+
+```{r eval=FALSE}
+
+# conda activate cicero
+library(Seurat)
+library(harmony)
+library(tidyverse)
+library(cowplot)
+library(patchwork)
+library(RColorBrewer)
+library(tictoc)
+#library(BayesSpace)
+#library(scater)
+
+colfunc <- colorRampPalette(rev(brewer.pal(11, 'Spectral' )))
+theme_set(theme_cowplot())
+
+setwd("/dfs7/swaruplab/smorabit/analysis/ADDS_2021/visium/5xFAD")
+
+fig_dir <- "figures/"
+data_dir <- "data/"
+
+umap_theme <- theme(
+  axis.line=element_blank(),
+  axis.text.x=element_blank(),
+  axis.text.y=element_blank(),
+  axis.ticks=element_blank(),
+  axis.title.x=element_blank(),
+  axis.title.y=element_blank(),
+  panel.background=element_blank(),
+  panel.border=element_blank(),
+  panel.grid.major=element_blank(),
+  panel.grid.minor=element_blank(),
+  plot.background=element_blank()
+)
+
+# re-load Seurat obj
+seurat_obj <- readRDS(paste0(data_dir,'5XFAD_seurat_processed.rds'))
+
+# add the image coordinates to the seurat object
+
+```
+
+load Emily's image analysis file:
+
+Note: this file has the mu symbol in the header so I had to go into excel and change the column names and save as a.csv
+
+Idea: Can we figure out distance between the different plaques?
+Try using voronoi from deldir package.
+
+```{r eval=FALSE}
+
+vis_df <- seurat_obj@meta.data %>% subset(Slide == "V11A06-320" & CaptureArea == "A1")
+
+image_df <- read.csv("~/swaruplab/smorabit/analysis/ADDS_2021/visium/5xFAD/data/V11A06-320_A1_crop.csv")
+
+image_df$BinaryID <- ifelse(
+  image_df$BinaryID == "General Analysis Amyloid Loc Mouse (Amylo)", 'Amylo', 'OC'
+)
+
+# scale the x and y coords:
+scale_factor <- 0.42
+image_df$x <- image_df$CentreX / scale_factor
+image_df$y <- image_df$CentreY / scale_factor
+
+# plot the image analysis
+p <- ggplot(image_df, aes(x=x, y=y, size=Area, color = BinaryID)) +
+  geom_point(alpha=0.5)
+
+
+# plot the visium data:
+p2 <- vis_df %>% ggplot(aes(x = imagecol, y=imagerow, color = annotation)) +
+  geom_point(size=1.5)
+
+pdf(paste0(fig_dir, 'test_image_analysis2.pdf'), width=12, height=5)
+p + p2
+dev.off()
+
+
+# put the data together???
+# plot the visium data:
+
+
+p2 <- vis_df %>% ggplot(aes(x = imagecol, y=imagerow, color = annotation)) +
+  geom_point(size=1) +
+  geom_point(data=image_df, aes(x=CentreX, y=CentreY, size=Area, color=BinaryID)) +
+  umap_theme
+
+pdf(paste0(fig_dir, 'test_image_analysis_combined.pdf'), width=6, height=6)
+p2
+dev.off()
+
+range(image_df$CentreX)
+range(vis_df$imagecol)
+
+#
+# plot_df <- vis_df %>% dplyr::select(c(imagerow, imagecol, annotation)) %>% dplyr::rename(c(x=imagerow, y=imagecol))
+# image_df <- image_df %>% select(c(CentreX, CentreY, BinaryID, Source))
+
+
+```
+
+Compute distances between spots and plaques
+
+```{r eval=FALSE}
+
+
+X <- image_df %>% subset(BinaryID == 'Amylo') %>%
+  dplyr::select(c(x,y)) %>%
+  as.matrix() %>% t()
+spots <- vis_df[,c('imagecol', 'imagerow')] %>% dplyr::rename(c(x=imagecol, y=imagerow)) %>% as.matrix() %>% t()
+
+dists <- apply(X, 2, function(x){
+    sqrt(colSums((spots - x)^2))
+})
+
+# flatten into a dataframe
+dist_df <- reshape2::melt(dists)
+
+# invert distances
+dist_df$value <- 1/dist_df$value
+
+
+dist_thresh <- 1/100
+dist_df$value <- ifelse(dist_df$value < dist_thresh, 0, dist_df$value)
+
+ix <- match(dist_df$Var2, rownames(image_df))
+
+dist_df$value <- dist_df$value * image_df$Area[ix]
+
+
+plaque_score <- dist_df %>% group_by(Var1) %>% summarise(plaque_score = sum(value))
+
+vis_df$plaque <- as.numeric(plaque_score$plaque_score)
+
+
+vis_df <- arrange(vis_df, plaque, descending=TRUE)
+
+# plot the visium data:
+p3 <- vis_df %>% ggplot(aes(x = imagecol, y=imagerow, color = plaque)) +
+  geom_point(size=1.5) + scale_color_viridis()
+
+pdf(paste0(fig_dir, 'test_image_analysis3.pdf'), width=12, height=4)
+p + p2 + p3
+dev.off()
+
+
+```

@@ -1,0 +1,396 @@
+```{r eval=FALSE}
+
+library(Seurat)
+library(tidyverse)
+library(cowplot)
+library(Matrix)
+library(viridis)
+library(harmony)
+library(ggpubr)
+library(patchwork)
+library(RColorBrewer)
+library(ggrepel)
+library(SPOTlight)
+
+
+setwd("/dfs7/swaruplab/smorabit/analysis/ADDS_2021/visium/5xFAD/")
+
+fig_dir <- "figures/"
+data_dir <- "data/"
+
+umap_theme <- theme(
+  axis.line=element_blank(),
+  axis.text.x=element_blank(),
+  axis.text.y=element_blank(),
+  axis.ticks=element_blank(),
+  axis.title.x=element_blank(),
+  axis.title.y=element_blank(),
+  panel.background=element_blank(),
+  panel.border=element_blank(),
+  panel.grid.major=element_blank(),
+  panel.grid.minor=element_blank(),
+  plot.background=element_blank()
+)
+
+
+
+
+source('/dfs7/swaruplab/smorabit/analysis/scWGCNA/bin/spatial_functions.R')
+
+
+# re-load seurat obj & BayesSpace object:
+# seurat_5x <- readRDS(paste0(data_dir,'ADDS_seurat_processed.rds'))
+
+# load visium
+seurat_5x <- readRDS('/dfs7/swaruplab/emiyoshi/Visium_5X/5XFAD_seurat_processed_annotated.rds')
+
+seurat_5x$Age <- factor(
+  as.character(seurat_5x$Age),
+  levels = c("4mo", "6mo", "8mo", "12mo")
+)
+
+mouse_cp <- c(
+      "ctx-deep-layers" = "#5b4468", "ctx-upper-layers" = "#9581a4", "ctx-olfactory" = "#8073ab",
+      "hippocampus" = "#d6a5b2", "hippocampus-pyramidal" = "#e193aa",
+      "lateral-ventricle" = "#d2c3b2",
+      "striatum" = "#F0DE8C",
+      "thalamus1" = "#00CBA7", "thalamus2" = "#abcc94",
+      "hypothalamus-amygdala" = "#72c9b1",
+      "WM1" = "#325ea8", "WM2" = "#64bcdb", "WM-cerebral-peduncle" = "#62a7d7",
+      "erythrocytes-neurons" = "#d07fc4", "unknown" = "#c47c4d"
+    )
+
+
+# set factor levels for mouse clusters
+seurat_5x$annotation <- factor(
+  as.character(seurat_5x$annotation),
+  levels = names(mouse_cp)
+)
+
+
+
+# load condition DEGs
+# degs_adds <- read.csv("/dfs7/swaruplab/emiyoshi/Visium_ADDS/DEGs/DSAD_vs_Control/DSAD_vs_Control_all.csv")
+# degs_ead <- read.csv("/dfs7/swaruplab/emiyoshi/Visium_ADDS/DEGs/earlyAD_vs_Control/earlyAD_vs_Control_all.csv")
+# degs_lad <- read.csv("/dfs7/swaruplab/emiyoshi/Visium_ADDS/DEGs/lateAD_vs_Control/lateAD_vs_Control_all.csv")
+
+# gene table
+# vis_gene_table <- data.table::fread('~/swaruplab/smorabit/data/ADDS_2021/visium/Dec_13_2021/spaceranger_count/Human1/outs/filtered_feature_bc_matrix/features.tsv.gz') %>% as.data.frame()
+# vis_gene_table <- vis_gene_table[,1:2]
+# colnames(vis_gene_table) <- c('gene_id', 'gene_name')
+
+# add colors
+# sc_color_df <- read.csv(file=paste0('/dfs7/swaruplab/smorabit/analysis/ADDS_2021/splitseq/integration/data/cell_identity.csv'))
+# seurat_obj@misc$color_scheme <- sc_color_df
+# human_cp <- sc_color_df$colour
+# names(human_cp) <- sc_color_df$group
+
+
+```
+
+
+Load the parallel spotlight outputs:
+
+```{r eval=FALSE}
+
+# get list of spotlight output files
+spotlight_dir <- '/dfs7/swaruplab/zhenkunc/ADDS/decon/'
+spotlight_files <- paste0(spotlight_dir, dir(spotlight_dir))
+spotlight_files <- spotlight_files[grepl('.csv', spotlight_files)]
+
+# load each file and merge into one dataframe
+spotlight_df <- do.call(rbind, lapply(spotlight_files, function(x){read.csv(x)}))
+rownames(spotlight_df) <- spotlight_df$X
+spotlight_df <- spotlight_df %>% select(-c(X, res_ss))
+colnames(spotlight_df) <- paste0(colnames(spotlight_df), '_deconv')
+
+# match the barcodes in the seurat object with the spotlight df
+ix <- match(colnames(seurat_5x), rownames(spotlight_df))
+
+# merge with the seurat object
+seurat_5x@meta.data <- cbind(seurat_5x@meta.data, spotlight_df[ix,])
+
+# save the result
+# saveRDS(seurat_5x, file=paste0(data_dir,'ADDS_seurat_processed.rds'))
+
+
+feats <- colnames(seurat_5x@meta.data)[grepl('deconv', colnames(seurat_5x@meta.data))]
+
+for(cur_gene in feats){
+  cur_group <- strsplit(cur_gene, '_')[[1]][1]
+  p <- SampleFeaturePlot(
+    seurat_5x,
+    feature=cur_gene,
+    #samples_to_plot = selected_samples,
+    sample_labels = c("Condition", 'Age', 'Sex'),
+    sample_col = "SAMPLE",
+    raster=TRUE,
+    plot_max = 'q99',
+    plot_min = 0.05,
+    colfunc = inferno,
+    rev_colors=TRUE,
+    dpi=600,
+    ncol = 9,
+    combine=FALSE,
+    text_size=8
+  )
+
+  p <- lapply(p, function(x){
+    x + theme(
+      plot.title = element_text(face='bold', size=15, vjust=-1),
+      plot.margin = margin(0,0,0,0)
+    ) + labs(fill=paste0(cur_group, '\nproportion'))
+  })
+
+
+    patch <- wrap_plots(p, ncol=8, widths=1, heights=1) + plot_layout(guides='collect') & theme(legend.position='bottom')
+
+
+
+    pdf(paste0(fig_dir, 'spotlight/', cur_gene, '_featureplot.pdf'), width=12, height=16)
+    print( patch)
+    dev.off()
+
+
+}
+
+# plotting in the representative samples:
+feats <- colnames(seurat_5x@meta.data)[grepl('deconv', colnames(seurat_5x@meta.data))]
+feats <- feats[!grepl('OB', feats)]
+feats <- feats[!grepl('OEC', feats)]
+feats <- feats[!grepl('cerebellum', feats)]
+names(feats) <- do.call(rbind, strsplit(feats, '_'))[,1]
+
+# order feats by cell types:
+ordering <- c(
+    'EX.cortical', 'EX.hippocampus.pyramidal', 'EX.hippocampus.granule', 'EX.thalamus',
+    'INH.migrating.interneuron', 'INH.medium.spiny', 'INH.midbrain',
+    'ASC', 'EPD', 'IMM', 'ODC', 'OPC',
+    'END', 'PER', 'VLMC'
+)
+feats <- feats[ordering]
+
+
+# representative samples ordered by age
+rep_samples_5x <- c('675', '421', '784', '314')
+rep_samples_WT <- c('242', '721', '343', '313')
+rep_samples <- c(rep_samples_5x, rep_samples_WT)
+
+
+plot_list <- list()
+for(cur_feat in feats){
+  print(cur_feat)
+  cur_group <- strsplit(cur_feat, '_')[[1]][1]
+
+  p <- SampleFeaturePlot(
+    seurat_5x,
+    feature=cur_feat,
+    sample_labels = c("Condition", 'Age'),
+    sample_col = "SAMPLE",
+    samples_to_plot = rep_samples,
+    ncol = 10,
+    raster=TRUE,
+    plot_max = 'q99',
+    plot_min = 0,
+    colfunc = inferno,
+    rev_colors=TRUE,
+    #colfunc=colorRampPalette(c('grey90', cur_color), bias=2),
+    #rev_colors=FALSE,
+    dpi=600,
+    combine=FALSE,
+    text_size=8
+  )
+
+  p <- lapply(p, function(x){
+    x <- x + theme(
+      plot.title = element_text(face='bold', size=8, vjust=-1),
+      plot.margin = margin(0,0,0,0)
+      # plot.margin = margin(-1,-1,-1,-1)
+    ) + NoLegend()
+    if(cur_feat != feats[1]){
+      x <- x + theme(
+        plot.title=element_blank()
+      )
+    }
+    x
+  })
+
+  p[[1]] <- p[[1]] + ylab(cur_group) + theme(
+    axis.title.y = element_text(face='bold', size=8, color = 'black', angle=0, vjust=0.5)
+  )
+
+  plot_list <- c(plot_list, p)
+
+}
+
+patch <- wrap_plots(plot_list, ncol=8, widths=1, heights=1) + plot_layout(guides='collect')
+
+pdf(paste0(fig_dir, 'spotlight_5x_combined.pdf'), width=12, height=18)
+#  print(p)
+print(patch)
+dev.off()
+
+
+
+
+```
+
+
+
+Proportion plots 
+
+
+```{r eval=FALSE}
+
+library(hdWGCNA)
+
+feats <- colnames(seurat_5x@meta.data)[grepl('deconv', colnames(seurat_5x@meta.data))]
+feats <- feats[!grepl('OB', feats)]
+feats <- feats[!grepl('OEC', feats)]
+feats <- feats[!grepl('cerebellum', feats)]
+spotlight_df <- seurat_5x@meta.data[,feats]
+
+# scale each row to sum to 1
+spotlight_df <- apply(spotlight_df, 1, function(x){
+    x / sum(x)
+}) %>% t %>% as.data.frame
+
+# add the cluster and the sample columns:
+spotlight_df$annotation <- seurat_5x$annotation
+spotlight_df$SAMPLE <- seurat_5x$SAMPLE
+spotlight_df$bc <- rownames(spotlight_df)
+
+# subset just one sample for now:
+spotlight_df <- subset(spotlight_df, SAMPLE == 241 & annotation == 'thalamus1')
+
+# melt the df:
+plot_df <- reshape2::melt(spotlight_df, c('bc', 'annotation', 'SAMPLE'))
+
+# re-order:
+plot_df <- plot_df %>% group_by(variable) %>% arrange(value)
+plot_df$bc <- factor(as.character(plot_df$bc), levels=unique(plot_df$bc))
+
+p <- ggplot(plot_df, aes(y=value, x=bc, fill=variable)) +
+  geom_bar(stat='identity', width=1) +
+#  geom_hline(yintercept = 0.5, linetype='dashed') +
+  scale_y_continuous(expand = c(0,0)) +
+  #scale_fill_manual(values=human_cp) +
+  theme(
+    panel.grid.major=element_blank(),
+    panel.grid.minor=element_blank(),
+    axis.text.x = element_blank(),
+    axis.title.x = element_blank(),
+    axis.ticks.x = element_blank(),
+    legend.title = element_blank(),
+    axis.line.y = element_line(colour = "black"),
+    axis.line.x = element_line(colour = "black")
+  )
+
+pdf(paste0(fig_dir, 'test_spotlight_proportion.pdf'), height=4, width=6)
+p 
+dev.off()
+
+
+
+
+
+
+################################################################################
+# snRNA-seq Proportion of Condition
+################################################################################
+
+cur_coords <- subset(cur_coords, annotation %in% seurat_vis$annotation)
+cur_coords$annotation <- factor(
+  as.character(cur_coords$annotation),
+  levels = levels(seurat_vis$annotation)
+)
+cur_coords$cell_identity <- factor(
+  as.character(cur_coords$cell_identity),
+  levels = levels(seurat_obj$cell_identity)
+)
+
+batches <- cur_coords$annotation %>% unique %>% as.character
+cur_clusters  <- cur_coords$cell_identity %>% unique %>% as.character
+
+scale_vec <- table(cur_coords$annotation)
+
+proportion_df <- data.frame()
+for(i in 1:length(cur_clusters)){
+  cluster_meta <- subset(cur_coords, cell_identity == cur_clusters[i] )
+  cur_df <- as.data.frame(table(cluster_meta$annotation)) %>% dplyr::rename(Count = Freq)
+
+  # compute the non-normalized % of cells in each group
+  cur_df$Freq <- cur_df$Count / sum(cur_df$Count)
+
+  # scale frequency to the total number of clusters in each sample
+  cur_df$Scaled <- cur_df$Count / scale_vec
+  cur_df$Scaled <- cur_df$Scaled / sum(cur_df$Scaled)
+
+  # add to ongoing proportion df
+  cur_df$cluster <- cur_clusters[i]
+  proportion_df <- rbind(proportion_df, cur_df)
+}
+
+proportion_df <- dplyr::rename(proportion_df, annotation = Var1)
+proportion_df$cluster <- factor(proportion_df$cluster, levels=levels(cur_coords$cell_identity))
+
+p <- ggplot(proportion_df, aes(y=Scaled, x=cluster, fill=annotation)) +
+  geom_bar(stat='identity') +
+#  geom_hline(yintercept = 0.5, linetype='dashed') +
+  scale_y_continuous(expand = c(0,0)) +
+  scale_fill_manual(values=human_cp) +
+  theme(
+    panel.grid.major=element_blank(),
+    panel.grid.minor=element_blank(),
+    axis.text.x = element_text(angle=45, hjust=1),
+    axis.title.x = element_blank(),
+    legend.title = element_blank(),
+    axis.line.y = element_line(colour = "black"),
+    axis.line.x = element_blank()
+  )
+
+pdf(paste0(fig_dir, 'test_cluster_proportion_region_scaled.pdf'), height=4, width=10)
+print(p)
+dev.off()
+
+p <- ggplot(proportion_df, aes(y=Freq, x=cluster, fill=Sample)) +
+  geom_bar(stat='identity') +
+  geom_hline(yintercept = 0.5, linetype='dashed') +
+  scale_y_continuous(expand = c(0,0)) +
+  #scale_fill_manual(values=c('gray65', 'gray45')) +
+  theme(
+    panel.grid.major=element_blank(),
+    panel.grid.minor=element_blank(),
+    axis.text.x = element_text(angle=45, hjust=1),
+    axis.title.x = element_blank(),
+    legend.title = element_blank(),
+    axis.line.y = element_line(colour = "black"),
+    axis.line.x = element_blank()
+  )
+
+pdf(paste0(fig_dir, 'cluster_proportion_sample_raw.pdf'), height=4, width=10)
+print(p)
+dev.off()
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

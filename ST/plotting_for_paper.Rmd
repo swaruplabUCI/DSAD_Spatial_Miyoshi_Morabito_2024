@@ -1,0 +1,706 @@
+```{r eval=FALSE}
+
+# conda activate cicero
+library(Seurat)
+library(harmony)
+library(tidyverse)
+library(cowplot)
+library(patchwork)
+library(RColorBrewer)
+
+colfunc <- colorRampPalette(rev(brewer.pal(11, 'Spectral' )))
+theme_set(theme_cowplot())
+
+setwd("/dfs7/swaruplab/smorabit/analysis/ADDS_2021/visium/human/")
+
+fig_dir <- "figures/"
+data_dir <- "data/"
+
+source('/dfs7/swaruplab/smorabit/analysis/scWGCNA/bin/spatial_functions.R')
+
+umap_theme <- theme(
+  axis.line=element_blank(),
+  axis.text.x=element_blank(),
+  axis.text.y=element_blank(),
+  axis.ticks=element_blank(),
+  axis.title.x=element_blank(),
+  axis.title.y=element_blank(),
+  panel.background=element_blank(),
+  panel.border=element_blank(),
+  panel.grid.major=element_blank(),
+  panel.grid.minor=element_blank(),
+  plot.background=element_blank()
+)
+
+# re-load seurat obj & BayesSpace object:
+# seurat_human <- readRDS(paste0(data_dir,'ADDS_seurat_processed.rds'))
+
+seurat_human <- readRDS("/dfs7/swaruplab/emiyoshi/Visium_ADDS/ADDS_seurat_processed_annotated.rds")
+
+seurat_human$Diagnosis <- factor(
+  as.character(seurat_human$Diagnosis),
+  levels = c("Control", "earlyAD", "AD", "AD_DS")
+)
+
+# 5x data:
+seurat_5x <- readRDS('/dfs7/swaruplab/emiyoshi/Visium_5X/5XFAD_seurat_processed_annotated.rds')
+
+seurat_5x$Age <- factor(
+  as.character(seurat_5x$Age),
+  levels = c("4mo", "6mo", "8mo", "12mo")
+)
+
+human_cp <- c("WM1" = "#64BCDB", "WM2" = "#62A7D7", "WM3" = "#99C8D7",
+      "L1" = "#8B3D5A", "L2-3" = "#E7BDE1", "L3-4" = "#E6A4CD",
+      "L3-4-5" = "#CF8BA3", "L5-6" = "#9E6D7F", "L6b" = "#CDAEB9")
+
+
+
+
+mouse_cp <- c("WM1" = "#325ea8", "WM2" = "#64bcdb", "WM-cerebral-peduncle" = "#62a7d7",
+      "erythrocytes-neurons" = "#d07fc4", "unknown" = "#c47c4d",
+      "hypothalamus-amygdala" = "#72c9b1", "striatum" = "#F0DE8C",
+      "lateral-ventricle" = "#d2c3b2",
+      "thalamus1" = "#00CBA7", "thalamus2" = "#abcc94",
+      "ctx-deep-layers" = "#5b4468", "ctx-upper-layers" = "#9581a4", "ctx-olfactory" = "#8073ab",
+      "hippocampus" = "#d6a5b2", "hippocampus-pyramidal" = "#e193aa")
+
+
+seurat_5x$annotation <- factor(
+  as.character(seurat_5x$annotation),
+  levels = rev(c("unknown", "erythrocytes-neurons", "WM-cerebral-peduncle", "WM2", "WM1",
+					"hypothalamus-amygdala", "thalamus2", "thalamus1",
+					"striatum", "lateral-ventricle", "hippocampus-pyramidal", "hippocampus",
+					"ctx-olfactory", "ctx-upper-layers", "ctx-deep-layers"))
+)
+
+```
+
+for human
+
+```{r eval=FALSE}
+
+
+dir.create(paste0(fig_dir, 'human_spatial_featureplots'))
+
+selected_samples <- c("Dec_13_2021_Human3", "Dec_13_2021_Human4", "Dec_13_2021_Human5", "Dec_13_2021_Human6")
+seurat_subset <- subset(seurat_human, Sample %in% selected_samples)
+
+
+######################################################
+# dimplot
+######################################################
+
+plot_df <- seurat_human@meta.data
+
+plot_list <- list()
+for(cur_sample in selected_samples){
+  print(cur_sample)
+  cur_df <- plot_df %>% subset(Sample == cur_sample)
+  cur_dx <- unique(cur_df$Diagnosis)
+  plot_list[[cur_sample]] <- cur_df  %>%
+    ggplot(aes(x=imagerow, y=imagecol, color=annotation)) +
+    geom_point(size=0.5) +
+    umap_theme +
+    ggtitle(cur_dx) +
+    theme(plot.title=element_text(hjust=0.5))
+}
+
+patch <- wrap_plots(plot_list, ncol=2) +
+  plot_layout(guides='collect')
+
+pdf(paste0(fig_dir, 'rep_human_annotations.pdf'), width=6, height=6)
+print(patch)
+dev.off()
+
+######################################################
+# featureplot
+######################################################
+
+
+plot_genes <- c("GFAP", "VIM", "NEAT1", "CHI3L1", "CLU", "CST3", "C3", 'S100B', 'AQP4', 'APP')
+
+for(cur_gene in plot_genes){
+  print(cur_gene)
+  p <- SampleFeaturePlot(
+    seurat_human,
+    feature=cur_gene,
+    #samples_to_plot = selected_samples,
+    sample_labels = c("Diagnosis", "Sex", 'Age'),
+    ncol = 10,
+    raster=TRUE,
+    plot_max = 'q99',
+    plot_min = 'q0',
+    colfunc = rainbow,
+    rev_colors=TRUE,
+    dpi=400,
+  )
+
+  pdf(paste0(fig_dir, 'human_spatial_featureplots/', cur_gene, '_featureplot.pdf'), width=20, height=8)
+  print(p)
+  dev.off()
+
+  p <- VlnPlot(seurat_human, features = cur_gene, group.by = 'annotation', split.by = 'Diagnosis', pt.size=0) + xlab('')
+
+  pdf(paste0(fig_dir, 'human_spatial_featureplots/', cur_gene, '_vlnplot.pdf'), width=7, height=4)
+  print(p)
+  dev.off()
+
+}
+
+
+
+plot_df <- seurat_human@meta.data
+#plot_df <- plot_df %>% subset(Sample %in% selected_samples)
+plot_df <- plot_df %>% subset(Sample == "Dec_13_2021_Human3")
+vertices <- BayesSpace:::.make_hex_spots(plot_df, 'annotation')
+
+splot <- ggplot(
+    data = vertices,
+    aes_(x = ~x.vertex, y = ~y.vertex,group = ~spot, fill = ~fill)
+  ) +
+  geom_polygon(size=0) +
+  labs(fill = cur_gene) +
+#  scale_fill_gradientn(colors=viridis(256)) +
+  coord_equal() +
+  theme_void()
+
+
+pdf(paste0(fig_dir, 'rep_human_feat_hex.pdf'), width=6, height=6)
+print(splot)
+dev.off()
+
+
+
+selected_samples <- c("Dec_13_2021_Human3", "Dec_13_2021_Human4", "Dec_13_2021_Human5", "Dec_13_2021_Human6")
+
+colfunc <- colorRampPalette(rev(brewer.pal(11, 'Spectral' )))
+
+p <- SampleFeaturePlot(
+  seurat_human,
+  feature=cur_gene,
+  #samples_to_plot = selected_samples,
+  sample_labels = c("Diagnosis", "Sex", 'Age'),
+  ncol = 10,
+  raster=TRUE,
+  plot_max = 'q99',
+  plot_min = 'q10',
+  colfunc = rainbow,
+  rev_colors=TRUE,
+  dpi=400
+)
+
+
+pdf(paste0(fig_dir, 'featureplot_hex_human.pdf'), width=20, height=8)
+p
+dev.off()
+
+p <- SampleFeaturePlot(
+  seurat_5x,
+  feature='Cnp',
+  sample_col = "SAMPLE",
+  sample_labels = c("Condition", "Age", 'Sex'),
+  ncol = 20,
+  raster=TRUE,
+  plot_max = 'q99',
+  plot_min = 'q0',
+  colfunc = rainbow,
+  rev_colors=TRUE,
+  dpi=600
+)
+
+
+pdf(paste0(fig_dir, 'featureplot_hex_mouse.pdf'), width=20, height=5)
+p
+dev.off()
+
+
+
+
+p <- SampleFeaturePlot(
+  seurat_obj,
+  feature='MBP',
+  #samples_to_plot = selected_samples,
+  sample_labels = c("Diagnosis", "Sex", 'Age'),
+  ncol = 10,
+  raster=TRUE,
+  plot_max = 'q99',
+  plot_min = 'q5'
+)
+
+
+pdf(paste0(fig_dir, 'rep_human_feat_hex_func.pdf'), width=20, height=8)
+p
+dev.off()
+
+
+```
+
+DimPlot with hexagons:
+
+```{r eval=FALSE}
+
+
+p <- VisDimPlot(
+  seurat_human,
+  group.by = 'annotation',
+  sample_labels = c("Diagnosis", "Sex", 'Age'),
+  dpi=800,
+  ncol = 10,
+  color_df=human_cp,
+  text_size=15,
+  combine=FALSE
+)
+
+p <- lapply(p, function(x){
+  x + theme(
+    plot.title = element_text(face='bold', size=15, vjust=-1),
+    plot.margin = margin(0,0,0,0)
+  ) + labs(fill='')
+})
+
+patch <- wrap_plots(p, ncol=7, widths=1, heights=1) + plot_layout(guides='collect')
+
+pdf(paste0(fig_dir, 'hex_annotation_human.pdf'), width=12, height=12)
+patch
+dev.off()
+
+p <- VisDimPlot(
+  seurat_5x,
+  group.by = 'annotation',
+  sample_labels = c("Age", "Condition", "Sex"),
+  sample_col = "SAMPLE",
+  dpi=600,
+  ncol = 9,
+  color_df=mouse_cp,
+  text_size=10
+)
+
+p <- lapply(p, function(x){
+  x + theme(
+    plot.title = element_text(face='bold', size=15, vjust=-1),
+    plot.margin = margin(0,0,0,0),
+    legend.position='bottom'
+  ) + labs(fill='')
+})
+
+patch <- wrap_plots(p, ncol=8, widths=1, heights=1) + plot_layout(guides='collect') & theme(legend.position='bottom')
+
+
+
+pdf(paste0(fig_dir, 'hex_ananotation_5x_paper.pdf'), width=14, height=16)
+patch
+dev.off()
+
+
+```
+
+Distriutions of UMI by spatial cluster:
+
+```{r eval=FALSE}
+
+p <- VlnPlot(seurat_human, group.by='annotation', features = 'nCount_Spatial', pt.size=0) +
+  geom_boxplot(outlier.shape=NA, width=.25, fill='white') +
+  scale_fill_manual(values=human_cp) +
+  scale_y_continuous(labels=scales::comma) +
+  ylab(expression(italic(N)[UMI])) +
+  xlab('') + NoLegend() + ggtitle('')
+
+pdf(paste0(fig_dir, 'vln_nUMI_annotation_human_ST.pdf'), height=4, width=8)
+p
+dev.off()
+
+p <- VlnPlot(seurat_human, group.by='Sample', features = 'nCount_Spatial', pt.size=0) +
+  geom_boxplot(outlier.shape=NA, width=.25, fill='white') +
+  scale_y_continuous(labels=scales::comma) +
+  ylab(expression(italic(N)[UMI])) +
+  xlab('') + NoLegend() + ggtitle('')
+
+pdf(paste0(fig_dir, 'vln_nUMI_Sample_human_ST.pdf'), height=4, width=12)
+p
+dev.off()
+
+
+
+
+p <- VlnPlot(seurat_5x, group.by='annotation', features = 'nCount_Spatial', pt.size=0) +
+  geom_boxplot(outlier.shape=NA, width=.25, fill='white') +
+  scale_fill_manual(values=mouse_cp) +
+  scale_y_continuous(labels=scales::comma) +
+  ylab(expression(italic(N)[UMI])) +
+  xlab('') + NoLegend() + ggtitle('')
+
+pdf(paste0(fig_dir, 'vln_nUMI_annotation_5x_ST.pdf'), height=4, width=10)
+p
+dev.off()
+
+
+p <- VlnPlot(seurat_5x, group.by='SAMPLE', features = 'nCount_Spatial', pt.size=0) +
+  geom_boxplot(outlier.shape=NA, width=.25, fill='white') +
+  scale_y_continuous(labels=scales::comma) +
+  ylab(expression(italic(N)[UMI])) +
+  xlab('') + NoLegend() + ggtitle('')
+
+pdf(paste0(fig_dir, 'vln_nUMI_Sample_5x_ST.pdf'), height=4, width=12)
+p
+dev.off()
+
+
+```
+
+
+for mouse
+
+```{r eval=FALSE}
+
+
+subset(seurat_5x@meta.data, Age == '12mo' & Condition == 'WT' & seqbatch == 'Dec_20_2021' & Sex == "F") %>% .$SAMPLE %>% unique
+
+
+
+dir.create(paste0(fig_dir, '5x_spatial_featureplots'))
+
+selected_samples <- c("572", "741", "784", '5101', '671', '721', '221', '524')
+seurat_subset <- subset(seurat_5x, SAMPLE %in% selected_samples)
+
+seurat_dx <- subset(seurat_5x, Condition == '5X')
+seurat_wt <- subset(seurat_5x, Condition == 'WT')
+
+plot_df <- seurat_5x@meta.data
+plot_list <- list()
+for(cur_sample in selected_samples){
+  print(cur_sample)
+  cur_df <- plot_df %>% subset(SAMPLE == cur_sample)
+  cur_dx <- unique(cur_df$Condition)
+  cur_tp <- unique(cur_df$Age)
+  plot_list[[cur_sample]] <- cur_df %>%
+    ggplot(aes(x=imagerow, y=imagecol, color=annotation)) +
+    geom_point(size=0.75) +
+    umap_theme +
+    ggtitle(paste0(cur_dx, ', ', cur_tp)) +
+    theme(plot.title=element_text(hjust=0.5))
+
+  if(length(plot_list) > 1){
+    plot_list[[cur_sample]] <- plot_list[[cur_sample]] + NoLegend()
+  }
+}
+
+patch <- wrap_plots(plot_list, ncol=4) +
+  plot_layout(guides='collect')
+
+pdf(paste0(fig_dir, 'rep_mouse_annotations.pdf'), width=12, height=6)
+print(patch)
+dev.off()
+
+
+
+plot_genes <- c("Gfap", "Vim", "Neat1", "Clu", "Cst3", "C3")
+
+for(cur_gene in plot_genes){
+
+  print(cur_gene)
+
+  expr_data <- GetAssayData(seurat_5x, assay='Spatial', slot='data')
+
+  plot_df <- seurat_5x@meta.data
+  plot_df$expression <- expr_data[cur_gene,]
+  plot_df <- plot_df %>% subset(SAMPLE %in% selected_samples)
+  plot_df$barcode <- rownames(plot_df)
+
+  plot_range <- range(plot_df$expression)
+
+  plot_list <- list()
+  for(cur_sample in selected_samples){
+    print(cur_sample)
+    cur_df <- plot_df %>% subset(SAMPLE == cur_sample)
+    cur_dx <- unique(cur_df$Condition)
+    cur_tp <- unique(cur_df$Age)
+    plot_list[[cur_sample]] <- cur_df %>% subset(expression != 0) %>%
+      ggplot(aes(x=imagerow, y=imagecol, color=expression)) +
+      geom_point(data = subset(cur_df, expression == 0), color='lightgrey', size=0.75) +
+      geom_point(size=0.75) +
+      scale_color_gradientn(colors=magma(256), limits=plot_range) +
+      umap_theme +
+      labs(color = cur_gene) +
+      ggtitle(paste0(cur_dx, ', ', cur_tp)) +
+      theme(plot.title=element_text(hjust=0.5))
+
+  }
+
+  patch <- wrap_plots(plot_list, ncol=4) +
+    plot_layout(guides='collect')
+
+  pdf(paste0(fig_dir, '5x_spatial_featureplots/', cur_gene, '_featureplot.pdf'), width=12, height=6)
+  print(patch)
+  dev.off()
+
+
+  p1 <- VlnPlot(seurat_dx, features = cur_gene, group.by = 'annotation', split.by = 'Age', pt.size=0) + xlab('') + ggtitle('5X') +
+  theme(
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank(),
+    axis.line.x = element_blank(),
+    plot.margin = margin(0,0,0,0)
+  )
+
+  p2 <- VlnPlot(seurat_wt, features = cur_gene, group.by = 'annotation', split.by = 'Age', pt.size=0) + xlab('') + ggtitle('WT') +
+  theme( plot.margin = margin(0,0,0,0))
+
+  patch <- p1 / p2 + plot_layout(guides='collect')
+
+  pdf(paste0(fig_dir, '5x_spatial_featureplots/', cur_gene, '_vlnplot.pdf'), width=8, height=5)
+  print(patch)
+  dev.off()
+
+
+}
+
+```
+
+
+
+
+
+
+
+OLD BELOW
+
+
+
+
+test rotating coordinates for one sample:
+
+```{r eval=FALSE}
+seurat_meta <- seurat_5x@meta.data
+
+
+
+
+seurat_5x@meta.data <- seurat_meta
+
+selected_samples <- c("572", "741", "784", '5101', '671', '721', '221', '524')
+cur_sample <- "411"
+
+mirror_hor <- TRUE
+mirror_vert <- FALSE
+angle <- pi/2
+
+p1 <- VisDimPlot(
+  seurat_5x,
+  group.by = 'annotation',
+  samples_to_plot = cur_sample,
+  sample_col = "SAMPLE",
+  color_df=mouse_cp
+)
+
+cur_df <- seurat_5x@meta.data %>%
+  subset(SAMPLE == cur_sample)
+
+xy <- cur_df %>%
+  dplyr::select(c(col, row)) %>%
+  as.matrix
+
+print(range(xy[,1]))
+print(range(xy[,2]))
+
+x_center <- round(mean(xy[,1]))
+y_center <- round(mean(xy[,2]))
+print(x_center)
+print(y_center)
+
+xy[,1] <- xy[,1] - x_center
+xy[,2] <- xy[,2] - y_center
+
+# apply rotation
+#xy_rot <- spdep::Rotation(xy, angle)
+
+x_ <- xy[,1]*cos(angle) - xy[,2]*sin(angle)
+y_ <- xy[,1]*sin(angle) + xy[,2]*cos(angle)
+xy_rot <- cbind(round(x_),  round(y_))
+
+if(mirror_hor){
+  xy_rot[,1] <- -xy_rot[,1]
+}
+if(mirror_vert){
+  xy_rot[,2] <- -xy_rot[,2]
+}
+
+# re-center
+xy_rot[,1] <- xy_rot[,1] + x_center
+xy_rot[,2] <- xy_rot[,2] + y_center
+xy[,1] <- xy[,1] + x_center
+xy[,2] <- xy[,2] + y_center
+
+print(range(xy_rot[,1]))
+print(range(xy_rot[,2]))
+
+head(xy_rot)
+
+# update meta
+seurat_5x@meta.data[rownames(xy), 'col'] <- as.numeric(xy_rot[,1])
+seurat_5x@meta.data[rownames(xy), 'row'] <- as.numeric(xy_rot[,2])
+
+
+cur_df2 <- seurat_5x@meta.data %>%
+  subset(SAMPLE == cur_sample)
+
+xy2 <- cur_df2 %>%
+  dplyr::select(c(col, row)) %>%
+  as.matrix
+
+ all.equal(xy2[,2], xy_rot[,2])
+
+
+df <- as.data.frame(xy_rot)
+colnames(df) <- c('col', 'row')
+df_old <- as.data.frame(xy)
+colnames(df_old) <- c('col', 'row')
+df$group <- cur_df$annotation
+
+#
+# p1 <-  ggplot(df_old, aes(x=x, y=y)) + geom_point() + ggplot2::coord_fixed(ratio=1)
+p2_gg <-  ggplot(df, aes(x=col, y=row, color=group)) + geom_point()+ NoLegend()
+#
+
+#cur_5x <- subset(seurat_5x, SAMPLE == cur_sample)
+
+p2 <- VisDimPlot(
+  seurat_5x,
+  group.by = 'annotation',
+  samples_to_plot = cur_sample,
+  sample_col = "SAMPLE",
+  color_df=mouse_cp
+)
+
+#p3_gg <- cur_5x@meta.data %>% ggplot(aes(x=col, y=row, color=annotation)) + geom_point()+ NoLegend()
+
+
+
+pdf(paste0(fig_dir, 'hex_ananotation_5x_rotation.pdf'), width=10, height=5)
+p1  + p2 + plot_layout(guides='collect')
+dev.off()
+#
+
+pdf(paste0(fig_dir, 'hex_ananotation_5x_rotation.pdf'), width=10, height=10)
+#p1  + p2 + plot_layout(guides='collect')
+(p1 + p2) / (p2_gg + p3_gg)
+dev.off()
+#
+# pdf(paste0(fig_dir, 'hex_ananotation_5x_rotation.pdf'), width=5, height=5)
+# p2  + theme(aspect.ratio=1)
+# dev.off()
+
+
+```
+
+
+
+
+
+Check gene for vivek:
+
+```{r eval=FALSE}
+
+library(viridis)
+
+cur_gene <- 'TSC22D3'
+
+p <- SampleFeaturePlot(
+  seurat_human,
+  feature=cur_gene,
+  sample_labels = c("Diagnosis", "Sex", 'Age'),
+  ncol = 10,
+  raster=TRUE,
+  plot_max = 'q99',
+  plot_min = 'q0',
+  colfunc = inferno,
+  rev_colors=TRUE,
+  dpi=400,
+)
+
+pdf(paste0(fig_dir, 'human_spatial_featureplots/', cur_gene, '_featureplot.pdf'), width=20, height=8)
+print(p)
+dev.off()
+
+
+
+
+
+
+cur_gene <- 'Tsc22d3'
+
+
+
+p <- SampleFeaturePlot(
+  seurat_5x,
+  feature=cur_gene,
+  sample_col = "SAMPLE",
+  sample_labels = c("Condition", "Age", 'Sex'),
+  ncol = 10,
+  raster=TRUE,
+  plot_max = 'q99',
+  plot_min = 'q0',
+  colfunc = inferno,
+  rev_colors=TRUE,
+  dpi=300
+)
+
+
+pdf(paste0(fig_dir, cur_gene, '_featureplot.pdf'), width=20, height=10)
+p
+dev.off()
+
+
+
+```
+
+Plot vivek UMAP:
+
+```{r eval=FALSE}
+
+library(tidyverse)
+library(cowplot)
+theme_set(theme_cowplot())
+
+setwd('/dfs7/swaruplab/smorabit/analysis/ADDS_2021/Picasso2/picasso')
+
+fig_dir <- 'figures/'
+
+plot_df <- read.csv(file='/dfs7/swaruplab/smorabit/analysis/ADDS_2021/Picasso2/picasso/data/cell_meta_vivek2.csv')
+
+# groups <- unique(plot_df$annotation)
+# plot_df$annotation <- factor(
+#   as.character(plot_df$annotation),
+#   levels = sample(groups, length(groups))
+# )
+
+p <- ggplot(plot_df, aes(x=vivek1, y=vivek2, color=annotation)) +
+  geom_point(size=5, alpha=0.5) +
+  theme(
+    legend.position = 'none',
+    axis.ticks = element_blank(),
+    axis.text  = element_blank()
+  )
+
+
+pdf(paste0(fig_dir, 'ggplot_vivek.pdf'), width=8, height=10)
+p
+dev.off()
+
+
+# plot with legend
+p <- ggplot(plot_df, aes(x=vivek1, y=vivek2, color=annotation)) +
+  geom_point(size=5, alpha=1) +
+  theme(
+    axis.ticks = element_blank(),
+    axis.text  = element_blank()
+  )
+
+
+pdf(paste0(fig_dir, 'ggplot_vivek_legend.pdf'), width=12, height=10)
+p
+dev.off()
+
+
+
+```

@@ -1,0 +1,1052 @@
+
+Load the dataset
+
+```{r eval=FALSE}
+
+
+library(Seurat)
+# library(tidyverse)
+library(cowplot)
+library(Matrix)
+library(viridis)
+library(harmony)
+library(ggpubr)
+library(patchwork)
+library(RColorBrewer)
+library(ggrepel)
+library(CellTrek)
+library(CellChat)
+library(ggplot2)
+library(cowplot)
+theme_set(theme_cowplot())
+
+source('/dfs7/swaruplab/smorabit/analysis/scWGCNA/bin/spatial_functions.R')
+
+
+# 2,000 MB limit:
+options(future.globals.maxSize= 2000*1024^2)
+
+
+setwd("/dfs7/swaruplab/smorabit/analysis/ADDS_2021/splitseq/integration/spatial_mapping/")
+
+fig_dir <- "figures/"
+data_dir <- "data/"
+
+umap_theme <- theme(
+  axis.line=element_blank(),
+  axis.text.x=element_blank(),
+  axis.text.y=element_blank(),
+  axis.ticks=element_blank(),
+  axis.title.x=element_blank(),
+  axis.title.y=element_blank(),
+  panel.background=element_blank(),
+  panel.border=element_blank(),
+  panel.grid.major=element_blank(),
+  panel.grid.minor=element_blank(),
+  plot.background=element_blank()
+)
+
+# load visium & split-seq seurat objects:
+seurat_vis <- readRDS('/dfs7/swaruplab/smorabit/analysis/ADDS_2021/visium/human/data/ADDS_seurat_processed.rds')
+
+# seurat_obj <- readRDS("/dfs7/swaruplab/smorabit/analysis/ADDS_2021/splitseq/data/ADDS_integrated_scvi.rds")
+
+# load ADDS dataset:
+seurat_obj <- readRDS(file="/dfs7/swaruplab/smorabit/analysis/ADDS_2021/splitseq/integration/data/ADDS_integrated.rds" )
+
+# only get the FCX:
+seurat_obj <- subset(seurat_obj, Tissue != 'PCC')
+
+# saveRDS(seurat_obj, file="/dfs7/swaruplab/smorabit/analysis/ADDS_2021/splitseq/integration/data/ADDS_integrated_FCX.rds")
+
+# add barcode:
+seurat_obj$bc <- colnames(seurat_obj)
+seurat_vis$bc <- colnames(seurat_vis)
+
+var_df <- read.delim(file = "/dfs7/swaruplab/smorabit/analysis/ADDS_2021/splitseq/integration/data/ADDS_subclusters_var.tsv", sep='\t')
+
+VariableFeatures(seurat_obj) <- var_df$X
+
+
+
+human_cp <- c("WM1" = "#64BCDB", "WM2" = "#62A7D7", "WM3" = "#99C8D7",
+      "L1" = "#8B3D5A", "L2/3" = "#E7BDE1", "L3/4" = "#E6A4CD",
+      "L3/4/5" = "#CF8BA3", "L5/6" = "#9E6D7F", "L6b" = "#CDAEB9")
+
+cp <- c("Control" = "#B8DBC5", "DSAD" = "#9E6D7F")
+
+
+
+group_levels <- c(
+  'EX L2', 'EX L2-3', 'EX L3-5', 'EX L5', 'EX L5-6', 'EX L6',
+  'INH VIP+', 'INH', 'INH LAMP5+', 'INH PVALB+', 'INH SST+',
+  'ODC1', 'ODC2', 'ODC3',
+  'OPC1', 'OPC2', 'OPC3',
+  'MG1', 'MG2',
+  'ASC1', 'ASC2', 'ASC3', 'ASC4',
+  'END Arterial', 'END Capillary',
+  'T-Pericyte', 'M-Pericyte', 'SMC',
+  'Perivascular Fibroblast', 'Meningeal Fibroblast'
+)
+color_df$group <- factor(as.character(color_df$group), levels=group_levels)
+color_df <- arrange(color_df, group)
+
+seurat_obj$cell_identity <- factor(
+  as.character(seurat_obj$cell_identity),
+  levels = group_levels
+)
+seurat_obj$cell_identity <- droplevels(seurat_obj$cell_identity)
+
+upper_clusters <- 
+
+
+```
+
+Compute the GM/WM ratio for each sample:
+
+```{r eval=FALSE}
+
+
+wm_spots <- seurat_vis@meta.data %>%
+  subset(annotation %in% c('WM1', 'WM2', 'WM3')) %>%
+  .$Sample %>% table
+
+
+cortical_spots <- seurat_vis@meta.data %>%
+  subset(!(annotation %in% c('WM1', 'WM2', 'WM3'))) %>%
+  .$Sample %>% table
+
+sample_df <- data.frame(
+  Sample = names(wm_spots),
+  wm = as.numeric(wm_spots),
+  cortex = as.numeric(cortical_spots)
+)
+sample_df$spots <- sample_df$cortex + sample_df$wm
+sample_df$ratio <- (sample_df$cortex - sample_df$wm) / (sample_df$spots)
+
+
+
+# which samples should we exclude for having too much GM or too much WM?
+max_ratio <- -0.3
+min_ratio <- 0.9
+
+sample_df[sample_df$ratio < max_ratio | sample_df$ratio > min_ratio,] %>% dim
+samples_exclude <- sample_df[sample_df$ratio < max_ratio | sample_df$ratio > min_ratio,'Sample']
+
+```
+
+Load celltrek outputs
+
+```{r eval=FALSE}
+
+# load celltrek output coordinates:
+anno_df <- read.csv(file='/dfs7/swaruplab/smorabit/analysis/ADDS_2021/splitseq/integration/spatial_mapping/celltrek_coords_combined.csv')
+dim(anno_df)
+
+# re-name white matter:
+anno_df$anno_fix <- ifelse(
+  grepl('WM', anno_df$annotation) & !(grepl('L', anno_df$annotation)),
+  'WM',
+  anno_df$annotation
+)
+
+annotation_names <- c('WM', as.character(unique(seurat_vis$annotation)))
+anno_df <- subset(anno_df, anno_fix %in% annotation_names)
+anno_df$sc_bc <- as.character(anno_df$sc_bc)
+anno_df$anno_fix <- factor(
+  as.character(anno_df$anno_fix),
+  levels = c('L1', 'L2/3', 'L3/4', 'L3/4/5', 'L5/6', 'L6b', 'WM')
+)
+
+table(anno_df$anno_fix)
+
+# samples to exclude for downstream analysis:
+anno_df <- subset(anno_df, !(vis_sample %in% samples_exclude))
+dim(anno_df)
+
+################################################################################
+# Group regions into Upper/Lower/WM
+################################################################################
+
+region_df <- data.frame(
+  anno = annotation_names,
+  region = c('WM', 'WM', 'Upper', 'Lower', 'Lower', 'WM', 'Upper', 'Upper', 'Lower', 'WM')
+)
+
+
+ix <- match(anno_df$anno_fix, region_df$anno)
+anno_df$anno_fix <- region_df$region[ix]
+
+################################################################################
+# count how many times each cell was mapped to each annotation
+################################################################################
+
+# count how many times each cell was mapped to each annotation
+cell_anno_props <- anno_df %>% dplyr::group_by(sc_bc, anno_fix, .drop=FALSE) %>%
+    dplyr::summarize(Freq=n())
+
+bc_counts <- table(anno_df$sc_bc)
+ix <- match(cell_anno_props$sc_bc, names(bc_counts))
+cell_anno_props$Freq / as.numeric(bc_counts[ix])
+cell_anno_props$prop <- cell_anno_props$Freq / as.numeric(bc_counts[ix])
+
+
+props <- data.frame(bc = colnames(seurat_obj))
+for(cur_group in as.character(unique(cell_anno_props$anno_fix))){
+
+  test_prop <- subset(cell_anno_props, anno_fix == cur_group)
+  ix <- match(colnames(seurat_obj), as.character(test_prop$sc_bc))
+  cur_prop <- data.frame(
+    cur_group = test_prop$prop[ix]
+  )
+  names(cur_prop) <- cur_group
+  props <- cbind(props, cur_prop)
+
+}
+
+
+################################################################################
+# count how many times each cell was mapped to each annotation
+################################################################################
+
+
+top_anno <- cell_anno_props %>% group_by(sc_bc) %>% top_n(1, wt=Freq) %>%
+  mutate(anno_fix = paste0(anno_fix, collapse=' ')) %>%
+  distinct()
+
+
+# fixing thing
+top_anno <- subset(top_anno, sc_bc %in% colnames(seurat_obj))
+seurat_obj <- seurat_obj[,top_anno$sc_bc]
+
+# add to seurat object:
+ix <- match(as.character(colnames(seurat_obj)), top_anno$sc_bc)
+seurat_obj$spatial_anno <- top_anno$anno_fix[ix]
+
+# resolve overlaps:
+seurat_obj$spatial_anno <- ifelse(grepl('Lower', seurat_obj$spatial_anno), 'Lower', seurat_obj$spatial_anno)
+seurat_obj$spatial_anno <- ifelse(grepl('Upper', seurat_obj$spatial_anno), 'Upper', seurat_obj$spatial_anno)
+
+
+table(seurat_obj$spatial_anno, seurat_obj$cell_type)
+table(seurat_obj$spatial_anno, seurat_obj$cell_identity)
+
+# setup annotations for CellChat:
+
+# use full celltype name for really small celltypes
+small_celltypes <- c('PER', 'END', 'SMC', 'MG', 'FBR')
+
+seurat_obj$cellchat_anno <- ifelse(
+  seurat_obj$cell_type %in% small_celltypes,
+  seurat_obj$cell_type, seurat_obj$cell_identity
+)
+seurat_obj$cellchat_anno <- paste0(
+  as.character(seurat_obj$cellchat_anno),
+  ' ',
+  as.character(seurat_obj$spatial_anno)
+)
+seurat_obj$cellchat_anno <- ifelse(seurat_obj$cell_type == 'EX', seurat_obj$cell_identity, seurat_obj$cellchat_anno)
+seurat_obj$cellchat_anno <- ifelse(seurat_obj$cell_type == 'ODC', seurat_obj$cell_identity, seurat_obj$cellchat_anno)
+
+# remove extremely underrepresented groups
+tmp <- as.data.frame(table(seurat_obj$Diagnosis, seurat_obj$cellchat_anno))
+groups_remove <- as.character(unique(tmp[tmp$Freq < 30, 'Var2']))
+seurat_obj <- seurat_obj[,!(seurat_obj$cellchat_anno %in% groups_remove)]
+
+
+# save the seurat object before moving on to cellchat
+saveRDS(seurat_obj, file='/dfs7/swaruplab/smorabit/analysis/ADDS_2021/splitseq/integration/data/ADDS_for_cellchat.rds')
+
+
+seurat_obj <- readRDS(file='/dfs7/swaruplab/smorabit/analysis/ADDS_2021/splitseq/integration/data/ADDS_for_cellchat.rds')
+
+
+
+```
+
+Plot the snRNA-seq UMAP split by Upper/Lower/WM Annotations 
+
+```{r eval=FALSE}
+
+
+
+  plot_list <- PlotEmbedding(
+    seurat_obj,
+    group.by = 'cell_identity',
+    split.by = 'spatial_anno',
+    plot_under=TRUE,
+    raster_dpi = 500,
+    raster_scale=0.5, point_size=0.5,
+    color_df = color_df,
+    label=FALSE,
+    plot_theme = umap_theme() + NoLegend()
+  )
+
+
+  pdf(paste0(fig_dir, 'umap_spatial_anno.pdf'), height=4, width=12)
+  print(wrap_plots(plot_list, ncol=3))
+  dev.off()
+
+
+```
+
+
+CellChat primary data processing:
+
+```{r eval=FALSE}
+
+library(CellChat)
+
+# re-load seurat object
+seurat_obj <- readRDS(file='/dfs7/swaruplab/smorabit/analysis/ADDS_2021/splitseq/integration/data/ADDS_for_cellchat.rds')
+
+################################################################################
+# create cellchat objects
+################################################################################
+
+
+data.input <- GetAssayData(seurat_obj, assay = "RNA", slot = "data")
+labels <- seurat_obj$cellchat_anno
+meta <- data.frame(group = labels, row.names = names(labels))
+conditions <- seurat_obj$Diagnosis %>% unique %>% as.character
+
+# make a list of cellchat objects:
+CellChatDB <- CellChatDB.human
+
+cellchat_list <- list()
+for(cond in conditions){
+  print(cond)
+  cellchat_list[[cond]] <- createCellChat(
+    object = data.input[,seurat_obj$Diagnosis == cond],
+    meta = seurat_obj@meta.data %>% subset(Diagnosis == cond),
+    group.by = "cellchat_anno"
+  )
+  cellchat_list[[cond]]@DB <- CellChatDB
+}
+
+
+################################################################################
+# process data
+################################################################################
+
+future::plan("multiprocess", workers = 8)
+
+for(cond in conditions){
+  print(cond)
+  cellchat_list[[cond]] <- subsetData(cellchat_list[[cond]])
+  cellchat_list[[cond]] <- identifyOverExpressedGenes(cellchat_list[[cond]])
+  cellchat_list[[cond]] <- identifyOverExpressedInteractions(cellchat_list[[cond]])
+  cellchat_list[[cond]] <- projectData(cellchat_list[[cond]], PPI.mouse)
+  cellchat_list[[cond]] <- computeCommunProb(cellchat_list[[cond]], raw.use = TRUE)
+  cellchat_list[[cond]] <- filterCommunication(cellchat_list[[cond]], min.cells = 10)
+  df.net <- subsetCommunication(cellchat_list[[cond]])
+  cellchat_list[[cond]] <- computeCommunProbPathway(cellchat_list[[cond]])
+  cellchat_list[[cond]] <- aggregateNet(cellchat_list[[cond]])
+
+  # save individual cellchat object:
+  print('saving')
+  saveRDS(cellchat_list[[cond]], file=paste0(data_dir, gsub(' ', '_', cond), '_cellchat.rds'))
+}
+
+
+```
+
+re-load processed cellchat objects:
+
+```{r eval=FALSE}
+
+library(CellChat)
+
+# re-load seurat object
+seurat_obj <- readRDS(file='/dfs7/swaruplab/smorabit/analysis/ADDS_2021/splitseq/integration/data/ADDS_for_cellchat.rds')
+
+
+
+
+cellchat_list <- list()
+conditions <- seurat_obj$DX %>% unique %>% as.character
+for(cond in conditions){
+  cellchat_list[[cond]] <- readRDS(paste0(data_dir, gsub(' ', '_', cond), '_cellchat.rds'))
+}
+
+
+for (i in 1:length(cellchat_list)) {
+  cellchat_list[[i]] <- netAnalysis_computeCentrality(cellchat_list[[i]])
+}
+
+
+# merge into one object
+cellchat <- mergeCellChat(cellchat_list, add.names = names(cellchat_list))
+
+cellchat <- readRDS(file = "/dfs7/swaruplab/smorabit/analysis/ADDS_2021/splitseq/integration/data/ADDS_cellchat.rds")
+
+# re-load cellchat DE table
+net <- read.table(file=paste0(data_dir, 'cellchat_DLRs.tsv'), sep='\t', header=1)
+net.up <- subsetCommunication(cellchat, net = net, datasets = "DSAD",ligand.logFC = 0.2, receptor.logFC = NULL)
+net.down <- subsetCommunication(cellchat, net = net, datasets = "Control", ligand.logFC = -0.1, receptor.logFC = -0.1)
+
+
+```
+
+CellChat tutorial plots
+
+https://htmlpreview.github.io/?https://github.com/sqjin/CellChat/blob/master/tutorial/Comparison_analysis_of_multiple_datasets.html
+
+```{r eval=FALSE}
+
+################################################################################
+# barplot of the number of interactions
+################################################################################
+
+gg1 <- compareInteractions(
+  cellchat, 
+  show.legend = F, group = c(1,2)
+) 
+gg2 <- compareInteractions(cellchat, show.legend = F, group = c(1,2), measure = "weight")
+
+pdf(paste0(fig_dir, 'cellchat_barplot_ninteractions.pdf'), width=4, height=3)
+gg1 + gg2
+dev.off()
+
+
+################################################################################
+# Network plot of differential interaction strength
+################################################################################
+
+pdf(paste0(fig_dir, 'cellchat_network_compare.pdf'), width=14, height=7)
+par(mfrow = c(1,2), xpd=TRUE)
+netVisual_diffInteraction(cellchat, weight.scale = T)
+netVisual_diffInteraction(cellchat, weight.scale = T, measure = "weight")
+dev.off()
+
+################################################################################
+# Heatmap of differential interaction strength
+################################################################################
+
+gg1 <- netVisual_heatmap(cellchat,   color.heatmap = c('seagreen', 'darkorchid4' )
+)
+#> Do heatmap based on a merged object
+gg2 <- netVisual_heatmap(
+  cellchat, measure = "weight",
+  color.heatmap = c('seagreen', 'darkorchid4' )
+  )
+#> Do heatmap based on a merged object
+
+pdf(paste0(fig_dir, 'cellchat_heatmap_compare2.pdf'), width=14, height=7)
+gg1 + gg2
+dev.off()
+
+################################################################################
+# Heatmap of differential interaction strength
+################################################################################
+
+for (i in 1:length(cellchat_list)) {
+  cellchat_list[[i]] <- netAnalysis_computeCentrality(cellchat_list[[i]])
+}
+
+
+num.link <- sapply(cellchat_list, function(x) {rowSums(x@net$count) + colSums(x@net$count)-diag(x@net$count)})
+weight.MinMax <- c(min(num.link), max(num.link)) # control the dot size in the different datasets
+gg <- list()
+for (i in 1:length(cellchat_list)) {
+  gg[[i]] <- netAnalysis_signalingRole_scatter(cellchat_list[[i]], title = names(cellchat_list)[i], weight.MinMax = weight.MinMax)
+}
+#> Signaling role analysis on the aggregated cell-cell communication network from all signaling pathways
+#> Signaling role analysis on the aggregated cell-cell communication network from all signaling pathways
+pdf(paste0(fig_dir, 'cellchat_signalingRole_compare.pdf'), width=14, height=7)
+patchwork::wrap_plots(plots = gg)
+dev.off()
+
+
+
+################################################################################
+# Signaling changes in selected groups:
+# TODO: make these plots for every cell type!!
+################################################################################
+
+groups <- unique(seurat_obj$cellchat_anno)
+
+groups_neuronal <- subset(seurat_obj@meta.data, cell_type %in% c('EX', 'INH')) %>% .$cellchat_anno %>% unique
+groups_neuronal <- groups_neuronal[order(groups_neuronal)]
+
+groups_mg <- subset(seurat_obj@meta.data, cell_type %in% c('MG')) %>% .$cellchat_anno %>% unique
+groups_mg <- groups_mg[order(groups_mg)]
+
+groups_vasc <- subset(seurat_obj@meta.data, cell_type %in% c('END', 'PER', 'FBR', 'SMC')) %>% .$cellchat_anno %>% unique
+groups_vasc <- groups_vasc[order(groups_vasc)]
+
+groups_asc <- subset(seurat_obj@meta.data, cell_type %in% c('ASC')) %>% .$cellchat_anno %>% unique
+groups_asc <- groups_asc[order(groups_asc)]
+
+groups_odc <- subset(seurat_obj@meta.data, cell_type %in% c('OPC', 'ODC')) %>% .$cellchat_anno %>% unique
+groups_odc <- groups_odc[order(groups_odc)]
+
+groups <- c(groups_neuronal, groups_asc, groups_mg, groups_odc, groups_vasc)
+
+plot_list <- list()
+for(cur_group in groups){
+  print(cur_group)
+  p <- netAnalysis_signalingChanges_scatter(
+    cellchat,
+    idents.use =  cur_group,
+    top.label=1,
+    color.use = c('grey10', '#8073AB', '#B8DBC5')
+  )
+
+  p <- p + ggtitle(cur_group) +
+    theme(
+      plot.title = element_text(face='bold', hjust=0.5, vjust=-1),
+      #plot.margin = margin(0,0,0,0),
+      legend.position = 'bottom'
+    ) +
+
+  pdf(paste0(fig_dir, 'cellchat_signalingChanges/', cur_group, '_differential.pdf'), width=4, height=4)
+  print(p)
+  dev.off()
+
+  p <- p + theme(
+    plot.margin = margin(0,0,0,0),
+    axis.title.x = element_blank(),
+    axis.title.y = element_blank()
+  ) + NoLegend()
+
+  plot_list[[cur_group]] <- p
+
+}
+
+pdf(paste0(fig_dir, 'cellchat_signalingChanges_all.pdf'), width=15, height=21)
+wrap_plots(plot_list, ncol=6)
+dev.off()
+
+
+
+```
+
+
+Pathway comparisons:
+
+
+```{r eval=FALSE}
+
+
+################################################################################
+# functional comparison
+################################################################################
+
+
+cellchat <- computeNetSimilarityPairwise(cellchat, type = "functional")
+cellchat <- netEmbedding(cellchat, type = "functional")
+cellchat <- netClustering(cellchat, type = "functional")
+
+
+pdf(paste0(fig_dir, 'cellchat_embed_networks_compare_functional.pdf'), width=6, height=5)
+netVisual_embeddingPairwise(
+  cellchat, 
+  type = "functional", 
+  label.size = 1.5,
+  top.label = 0.1
+  #pathway.labeled = c('NECTIN', 'SEMA6')
+  )
+dev.off()
+
+################################################################################
+# structural comparison
+################################################################################
+
+
+cellchat <- computeNetSimilarityPairwise(cellchat, type = "structural")
+cellchat <- netEmbedding(cellchat, type = "structural")
+cellchat <- netClustering(cellchat, type = "structural")
+
+
+pdf(paste0(fig_dir, 'cellchat_embed_networks_compare_structural2.pdf'), width=10, height=10)
+netVisual_embeddingPairwise(cellchat, type = "structural", label.size = 3.5)
+#> 2D visualization of signaling networks from datasets 1 2
+dev.off()
+
+
+
+
+
+cellchat <- computeNetSimilarityPairwise(cellchat, type = "structural")
+cellchat <- netEmbedding(cellchat, type = "structural")
+cellchat <- netClustering(cellchat, type = "structural")
+
+
+pdf(paste0(fig_dir, 'cellchat_embed_networks_compare_structural2.pdf'), width=6, height=6)
+netVisual_embeddingPairwise(cellchat, type = "structural", label.size = 3)
+#> 2D visualization of signaling networks from datasets 1 2
+dev.off()
+
+
+p1 <- rankSimilarity(cellchat, type = "functional")
+p2 <- rankSimilarity(cellchat, type = "structural")
+
+pdf(paste0(fig_dir, 'cellchat_rank_similarity.pdf'), width=7, height=5)
+p1 + p2
+dev.off()
+
+
+################################################################################
+# Compare information flow
+################################################################################
+
+
+gg1 <- rankNet(cellchat, mode = "comparison", stacked = T, do.stat = TRUE) 
+
+pdf(paste0(fig_dir, 'cellchat_information_flow_comparison2.pdf'), width=5, height=10)
+gg1
+dev.off()
+
+
+```
+
+
+Identify up- and down-regulated LR pairs
+
+```{r eval=FALSE}
+
+pdf(paste0(fig_dir, 'cellchat_commprobs_compare.pdf'), width=10, height=5)
+netVisual_bubble(cellchat, sources.use = 4, targets.use = c(5:11),  comparison = c(1, 2), angle.x = 45)
+dev.off()
+
+
+gg1 <- netVisual_bubble(cellchat, sources.use = 4, targets.use = c(5:11),  comparison = c(1, 2), max.dataset = 2, title.name = "Increased signaling in DSAD", angle.x = 45, remove.isolate = T)
+#> Comparing communications on a merged object
+gg2 <- netVisual_bubble(cellchat, sources.use = 4, targets.use = c(5:11),  comparison = c(1, 2), max.dataset = 1, title.name = "Decreased signaling in DSAD", angle.x = 45, remove.isolate = T)
+#> Comparing communications on a merged object
+
+pdf(paste0(fig_dir, 'cellchat_commprobs_compare.pdf'), width=10, height=5)
+gg1 + gg2
+dev.off()
+
+saveRDS(cellchat, file = "/dfs7/swaruplab/smorabit/analysis/ADDS_2021/splitseq/integration/data/ADDS_cellchat.rds")
+
+
+################################################################################
+# Based on DEGs
+################################################################################
+
+pos.dataset = "DSAD"
+features.name = pos.dataset
+
+cellchat <- identifyOverExpressedGenes(
+  cellchat,
+  group.dataset = "datasets",
+  pos.dataset = pos.dataset,
+  features.name = features.name,
+  only.pos = FALSE,
+  thresh.pc = 0.1,
+  thresh.fc = 0.1,
+  thresh.p = 1
+)
+
+# map the results of differential expression analysis onto the inferred cell-cell communications to easily manage/subset the ligand-receptor pairs of interest
+net <- netMappingDEG(cellchat, features.name = features.name)
+
+# extract the ligand-receptor pairs with upregulated ligands in DSAD
+net.up <- subsetCommunication(cellchat, net = net, datasets = "DSAD",ligand.logFC = 0.2, receptor.logFC = NULL)
+
+# extract the ligand-receptor pairs with upregulated ligands and upregulated recetptors in NL, i.e.,downregulated in LS
+net.down <- subsetCommunication(cellchat, net = net, datasets = "Control", ligand.logFC = -0.1, receptor.logFC = -0.1)
+
+# get the individual signaling genes:
+gene.up <- extractGeneSubsetFromPair(net.up, cellchat)
+gene.down <- extractGeneSubsetFromPair(net.down, cellchat)
+
+head(net)
+
+# write tables to file:
+
+net[grepl('CD99', net$interaction_name),1:5]
+
+net %>% subset(ligand == 'CD99' & receptor == 'PILRA') %>% head
+
+write.table(net, file=paste0(data_dir, 'cellchat_DLRs.tsv'), quote=FALSE, row.names=FALSE, sep='\t')
+
+# re-load table
+net <- read.table(file=paste0(data_dir, 'cellchat_DLRs.tsv'), sep='\t', header=1)
+
+# visualize with the bubble plot
+pairLR.use.up = net.up[, "interaction_name", drop = F]
+gg1 <- netVisual_bubble(cellchat, pairLR.use = pairLR.use.up, sources.use = 4, targets.use = c(5:11), comparison = c(1, 2),  angle.x = 90, remove.isolate = T,title.name = paste0("Up-regulated signaling in ", names(cellchat_list)[2]))
+
+#> Comparing communications on a merged object
+pairLR.use.down = net.down[, "interaction_name", drop = F]
+gg2 <- netVisual_bubble(
+  cellchat,
+  pairLR.use = pairLR.use.down,
+  sources.use = 4,
+  #targets.use = c(5:11),
+  comparison = c(1, 2),
+  angle.x = 90,
+  remove.isolate = T,
+  title.name = paste0("Down-regulated signaling in ",names(cellchat_list)[2])
+)
+
+
+
+#> Comparing communications on a merged object
+pdf(paste0(fig_dir, 'cellchat_commprobs_compare_DEGs.pdf'), width=10, height=5)
+gg1 + gg2
+dev.off()
+
+pdf(paste0(fig_dir, 'cellchat_commprobs_compare_DEGs_test.pdf'), width=14, height=7)
+gg2
+dev.off()
+
+
+
+```
+
+Loop through all of these DEGs and plot the signaling networks
+
+```{r eval=FALSE}
+
+dir.create(paste0(fig_dir, 'netplots_up'))
+dir.create(paste0(fig_dir, 'netplots_down'))
+
+# get color scheme:
+colors <- scPalette(length(unique(seurat_obj$cellchat_anno)))
+groups <- unique(seurat_obj$cellchat_anno)
+groups <- groups[order(groups)]
+names(colors) <- groups
+
+pathways.show <- unique(net.up$pathway_name)
+weight.max <- getMaxWeight(cellchat_list, attribute = c("idents","count"))
+
+# to-do: try-catch to skip the ones that are empty
+for(cur_pathway in pathways.show){
+  print(cur_pathway)
+  skip <- FALSE
+  pdf(paste0(fig_dir, 'netplots_up/cellchat_pathway_circleplot_', cur_pathway,'.pdf'), width=5, height=5)
+  # par(mfrow = c(1,2), xpd=TRUE)
+  for (i in 1:length(cellchat_list)) {
+    print(tryCatch(netVisual_aggregate(
+      cellchat_list[[i]],
+      signaling = cur_pathway,
+      layout = "circle",
+      edge.weight.max = weight.max[1],
+      remove.isolate=TRUE,
+      edge.width.max = 5,
+      signaling.name = paste(cur_pathway, names(cellchat_list)[i]),
+      vertex.label.cex = 0.4,
+      color.use = colors
+    ), error=function(e){skip <<- TRUE}))
+  }
+  dev.off()
+}
+
+
+pathways.show <- unique(net.down$pathway_name)
+weight.max <- getMaxWeight(cellchat_list, attribute = c("idents","count"))
+
+# to-do: try-catch to skip the ones that are empty
+for(cur_pathway in pathways.show){
+  print(cur_pathway)
+  skip <- FALSE
+  pdf(paste0(fig_dir, 'netplots_down/cellchat_pathway_circleplot_', cur_pathway,'.pdf'), width=5, height=5)
+  # par(mfrow = c(1,2), xpd=TRUE)
+  for (i in 1:length(cellchat_list)) {
+    print(tryCatch(netVisual_aggregate(
+      cellchat_list[[i]],
+      signaling = cur_pathway,
+      layout = "circle",
+      edge.weight.max = weight.max[1],
+      remove.isolate=TRUE,
+      edge.width.max = 5,
+      signaling.name = paste(cur_pathway, names(cellchat_list)[i]),
+      vertex.label.cex = 0.4,
+      color.use = colors
+    ), error=function(e){skip <<- TRUE}))
+  }
+  dev.off()
+}
+
+#########################################################################
+# heatmap version
+#########################################################################
+
+
+pathways.show <- unique(net.up$pathway_name)
+weight.max <- getMaxWeight(cellchat_list, attribute = c("idents","count"))
+
+# to-do: try-catch to skip the ones that are empty
+for(cur_pathway in pathways.show){
+  print(cur_pathway)
+  skip <- FALSE
+  pdf(paste0(fig_dir, 'netplots_up/cellchat_pathway_heatmap_', cur_pathway,'.pdf'), width=8, height=7)
+  # par(mfrow = c(1,2), xpd=TRUE)
+  for (i in 1:length(cellchat_list)) {
+    print(tryCatch(netVisual_heatmap(
+      cellchat_list[[i]],
+      signaling = cur_pathway,
+      color.heatmap = 'Reds',
+      title.name = paste(cur_pathway, names(cellchat_list)[i]),
+      #cluster.rows=TRUE,
+      #cluster.cols=TRUE
+    ), error=function(e){skip <<- TRUE}))
+  }
+  dev.off()
+}
+
+
+
+pathways.show <- unique(net.down$pathway_name)
+weight.max <- getMaxWeight(cellchat_list, attribute = c("idents","count"))
+
+# to-do: try-catch to skip the ones that are empty
+for(cur_pathway in pathways.show){
+  print(cur_pathway)
+  skip <- FALSE
+  pdf(paste0(fig_dir, 'netplots_down/cellchat_pathway_heatmap_', cur_pathway,'.pdf'), width=8, height=7)
+  # par(mfrow = c(1,2), xpd=TRUE)
+  for (i in 1:length(cellchat_list)) {
+    print(tryCatch(netVisual_heatmap(
+      cellchat_list[[i]],
+      signaling = cur_pathway,
+      color.heatmap = 'Blues',
+      title.name = paste(cur_pathway, names(cellchat_list)[i]),
+    ), error=function(e){skip <<- TRUE}))
+  }
+  dev.off()
+}
+
+
+```
+
+Try making a hierarchy plot (looks bad)
+
+```{r eval=FALSE}
+
+
+pathways.show <- unique(net.up$pathway_name)
+weight.max <- getMaxWeight(cellchat_list, attribute = c("idents","count"))
+
+# to-do: try-catch to skip the ones that are empty
+for(cur_pathway in pathways.show){
+  print(cur_pathway)
+  skip <- FALSE
+  pdf(paste0(fig_dir, 'netplots_up/cellchat_pathway_circleplot_', cur_pathway,'.pdf'), width=5, height=5)
+  # par(mfrow = c(1,2), xpd=TRUE)
+  for (i in 1:length(cellchat_list)) {
+    print(tryCatch(netVisual_aggregate(
+      cellchat_list[[i]],
+      signaling = cur_pathway,
+      layout = "circle",
+      #edge.weight.max = weight.max[1],
+      edge.width.max = 3,
+      signaling.name = paste(cur_pathway, names(cellchat_list)[i]),
+      vertex.label.cex = 0.4
+    ), error=function(e){skip <<- TRUE}))
+  }
+  dev.off()
+}
+
+cur_pathway <- pathways.show[1]
+
+all_groups <- unique(seurat_obj$cellchat_anno)
+all_groups <- all_groups[order(all_groups)]
+
+neuronal_groups <- c(all_groups[grep('EX', all_groups)], all_groups[grep('INH', all_groups)])
+glial_groups <- c(
+  all_groups[grep('MG', all_groups)],
+  all_groups[grep('ASC', all_groups)],
+  all_groups[grep('ODC', all_groups)],
+  all_groups[grep('OPC', all_groups)]
+)
+
+regex <- "EX|INH"
+vertex.receiver <- grep(regex, all_groups)
+sources.use <- all_groups
+targets.use <- all_groups
+
+pdf(paste0(fig_dir, 'test_hierarchy_', cur_pathway,'.pdf'), width=10, height=7)
+for (i in 1:length(cellchat_list)) {
+  print(tryCatch(netVisual_aggregate(
+    cellchat_list[[i]],
+    signaling = cur_pathway,
+    layout = "hierarchy",
+    #edge.weight.max = weight.max[1],
+    edge.width.max = 5,
+    signaling.name = paste(cur_pathway, names(cellchat_list)[i]),
+    vertex.label.cex = 0.4,
+    vertex.receiver = vertex.receiver,
+  ), error=function(e){skip <<- TRUE}))
+}
+dev.off()
+
+
+
+
+```
+
+
+Example plots
+
+```{r eval=FALSE}
+
+pathways.show <- c("CD99")
+weight.max <- getMaxWeight(cellchat_list, attribute = c("idents","count"))
+
+pdf(paste0(fig_dir, 'cellchat_pathway_circleplot_test.pdf'), width=10, height=5)
+par(mfrow = c(1,2), xpd=TRUE)
+for (i in 1:length(cellchat_list)) {
+  netVisual_aggregate(
+    cellchat_list[[i]],
+    signaling = pathways.show,
+    layout = "circle",
+    edge.weight.max = weight.max[1],
+    edge.width.max = 10,
+    signaling.name = paste(pathways.show, names(cellchat_list)[i]),
+    vertex.label.cex = 0.4
+  )
+}
+dev.off()
+
+
+
+pathways.show <- c("SPP1")
+weight.max <- getMaxWeight(cellchat_list, attribute = c("idents","count"))
+
+pdf(paste0(fig_dir, 'cellchat_pathway_circleplot_test2.pdf'), width=10, height=5)
+par(mfrow = c(1,2), xpd=TRUE)
+for (i in 1:length(cellchat_list)) {
+  netVisual_aggregate(
+    cellchat_list[[i]],
+    signaling = pathways.show,
+    layout = "circle",
+    edge.weight.max = weight.max[1],
+    edge.width.max = 10,
+    signaling.name = paste(pathways.show, names(cellchat_list)[i]),
+    vertex.label.cex = 0.4
+  )
+}
+dev.off()
+
+```
+
+
+Make snRNA-seq expression plots for L/Rs of certain pathways 
+
+```{r eval=FALSE}
+
+#  load celltrek coordinats:
+
+anno_df <- read.csv('celltrek_coords_combined.csv')
+
+# add a clear coarse-grain celltype grouping:
+seurat_obj$coarse_groups <- ifelse(
+  seurat_obj$cell_type %in% c('FBR', 'PER', 'END', 'SMC'), 'VASC', seurat_obj$cell_type
+)
+seurat_obj$coarse_groups <- factor(
+  as.character(seurat_obj$coarse_groups, levels=c('EX', 'INH', 'ODC', 'OPC', 'MG', 'ASC', 'VASC'))
+)
+
+
+# select sample
+cur_vis_sample <- 'Dec_13_2021_Human8'
+cur_vis_sample <- 'Dec_13_2021_Human5'
+
+# is this sample cntrl or AD/DS?
+cur_vis_sample_dx <- subset(seurat_vis@meta.data, Sample == cur_vis_sample) %>% .$Diagnosis %>% unique %>% as.character
+
+# get ST coords for this sample, and split seurat object by cell-type
+cur_coords <- subset(anno_df, vis_sample == cur_vis_sample)
+cur_seurat <- seurat_obj[,cur_coords$sc_bc]
+
+
+rownames(cur_coords) <- cur_coords$sc_bc
+cur_coords <- cur_coords[colnames(cur_seurat),]
+
+cur_seurat@reductions$spatial <- CreateDimReducObject(
+  embeddings = as.matrix(cur_coords[,c('celltrek_1', 'celltrek_2')])
+)
+
+# select signaling pathway and get all of its constituent gfennes
+pathway_list <- c(
+  'CD99', 'ANGPTL', 'VEGF', 'NECTIN', 'EPHA', 'EPHB',
+  'SEMA3', 'SEMA4', 'SEMA5', 'SEMA6'
+)
+
+
+for(pathway in pathway_list){
+
+  res <- extractEnrichedLR(cellchat, signaling = pathway, geneLR.return = TRUE, enriched.only = TRUE)
+  features <- res$geneLR
+  features
+
+  dir.create(paste0(fig_dir, 'cellchat_featureplots/', pathway))
+
+  quantile <- 1
+  for(cur_gene in features){
+
+    print(cur_gene)
+
+    if(!(cur_gene %in% rownames(cur_seurat))){
+      next
+    }
+
+    cur_expr <- GetAssayData(cur_seurat, slot='data')[cur_gene,]
+    cur_max <- quantile(cur_expr, quantile)
+
+    p <- FeatureEmbedding(
+        cur_seurat,
+        features = cur_gene,
+        facet_by = 'coarse_groups',
+        reduction = 'spatial',
+        point_size=0.5,
+       # plot_min = 0,
+       # plot_max = cur_max,
+        dpi=400
+      ) 
+
+    pdf(paste0(fig_dir, 'cellchat_featureplots/',pathway, '/',cur_vis_sample, '-', cur_gene,'.pdf'), width=8, height=4)
+    print(p)
+    dev.off()
+
+  }
+
+}
+
+
+enriched <- FALSE
+for(pathway in pathway_list){
+
+  res <- extractEnrichedLR(cellchat, signaling = pathway, geneLR.return = TRUE, enriched.only = enriched)
+  features <- res$geneLR
+  features
+
+  p <- custom_vln(
+    seurat_obj,
+    features = features,
+    group.by = 'cell_identity',
+    add_boxplot=FALSE,
+    split.by = 'Diagnosis',
+    split_colors=cp,
+    add_colorbar=FALSE,
+    plot_ymin = 0
+  )
+
+  h = ceiling(length(features) * 0.666) 
+  if(h <= 2){
+    h = 3
+  }
+  pdf(paste0(fig_dir, 'cellchat_vlnplots/', pathway, '_vlnplot_all.pdf'), width=10, height=h)
+  print(p)
+  dev.off()
+
+}
+
+
+```
+
+
+
+TODO: Run Part IV Systems analysis of cell-cell communication
+https://htmlpreview.github.io/?https://github.com/sqjin/CellChat/blob/master/tutorial/CellChat-vignette.html#identify-signaling-roles-e.g.-dominant-senders-receivers-of-cell-groups-as-well-as-the-major-contributing-signaling
+```{r eval=FALSE}
+
+
+
+```

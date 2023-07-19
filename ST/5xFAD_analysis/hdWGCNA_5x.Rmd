@@ -1,0 +1,1231 @@
+
+```{r eval=FALSE}
+
+
+library(Seurat)
+library(tidyverse)
+library(cowplot)
+library(patchwork)
+library(WGCNA)
+library(Matrix)
+library(viridis)
+library(harmony)
+library(RColorBrewer)
+library(ggpubr)
+library(tictoc)
+library(RColorBrewer)
+library(Hmisc)
+library(corrplot)
+library(enrichR)
+library(GeneOverlap)
+library(grid)
+library(gridExtra)
+library(igraph)
+library(ggrepel)
+#library(hdWGCNA)
+enableWGCNAThreads(nThreads = 8)
+theme_set(theme_cowplot())
+set.seed(12345)
+
+
+# spatial plotting functions
+source('/dfs7/swaruplab/smorabit/analysis/scWGCNA/bin/spatial_functions.R')
+
+# source('~/swaruplab/smorabit/analysis/scWGCNA/bin/metaspots.R')
+
+devtools::install_github('smorabit/hdWGCNA', ref='dev')
+library(hdWGCNA)
+
+setwd('~/swaruplab/smorabit/analysis/ADDS_2021/visium/5xFAD/hdWGCNA')
+fig_dir <- "figures/"
+data_dir <- "data/"
+
+seurat_5x <- readRDS(file=paste0(data_dir, "5xFAD_seurat_hdWGCNA.rds"))
+seurat_5x$annotation <- droplevels(seurat_5x$annotation)
+
+
+mouse_cp <- c(
+      "ctx-deep-layers" = "#5b4468", "ctx-upper-layers" = "#9581a4", "ctx-olfactory" = "#8073ab",
+      "hippocampus" = "#d6a5b2", "hippocampus-pyramidal" = "#e193aa",
+      "lateral-ventricle" = "#d2c3b2",
+      "striatum" = "#F0DE8C",
+      "thalamus1" = "#00CBA7", "thalamus2" = "#abcc94",
+      "hypothalamus-amygdala" = "#72c9b1",
+      "WM1" = "#325ea8", "WM2" = "#64bcdb", "WM-cerebral-peduncle" = "#62a7d7",
+      "erythrocytes-neurons" = "#d07fc4", "unknown" = "#c47c4d"
+    )
+
+
+```
+
+
+Run hdWGCNA in the mouse spatial data
+
+```{r eval=FALSE}
+
+# load seurat object with amyloid plaque scores
+seurat_5x <- readRDS('/dfs7/swaruplab/smorabit/analysis/ADDS_2021/visium/5xFAD/voyager/data/5xFAD_seurat_processed_amyloid.rds')
+
+# remove the unknown cluster
+seurat_5x <- subset(seurat_5x, annotation != 'unknown')
+
+seurat_5x <- SetupForWGCNA(
+  seurat_5x,
+  gene_select = "fraction",
+  fraction = 0.05,
+  group.by = 'annotation',
+  wgcna_name = "vis"
+)
+length(GetWGCNAGenes(seurat_5x))
+
+# construct metaspots
+seurat_5x <- MetaspotsByGroups(
+  seurat_5x,
+  group.by = c("SAMPLE"),
+  ident.group = "SAMPLE"
+)
+
+seurat_5x  <- NormalizeMetacells(seurat_5x )
+
+seurat_5x  <- SetDatExpr(
+  seurat_5x ,
+  group.by=NULL,
+  group_name = NULL,
+  use_metacells=TRUE,
+  slot = 'data',
+)
+
+
+seurat_5x <- TestSoftPowers(seurat_5x)
+
+# plot the results:
+plot_list <- PlotSoftPowers(seurat_5x)
+
+# assemble with patchwork
+pdf(paste0(fig_dir, '5x_softpower.pdf'), width=12, height=8)
+wrap_plots(plot_list, ncol=2)
+dev.off()
+
+# construct wgcna network:
+seurat_5x <- ConstructNetwork(
+  seurat_5x,
+  tom_name='5x_TOM',
+  overwrite_tom=TRUE
+)
+
+# plot the dendrogram
+pdf(paste0(fig_dir, "5x_dendro.pdf"),height=3, width=6)
+PlotDendrogram(seurat_5x, main='hdWGCNA Dendrogram')
+dev.off()
+
+modules <- GetModules(seurat_5x) %>% dplyr::select(gene_name, module, color)
+seurat_5x <- SetModules(seurat_5x, modules)
+
+seurat_5x <- ModuleEigengenes(
+  seurat_5x,
+  group.by.vars="seqbatch",
+)
+
+
+stratified_sample <- seurat_5x@meta.data %>%
+  group_by(annotation, SAMPLE) %>%
+  mutate(num_rows=n()) %>%
+  sample_frac(0.2, weight=num_rows) %>%
+  ungroup
+seurat_5x$selected <- ifelse(seurat_5x$bc %in% stratified_sample$bc, 'Y', 'N')
+table(seurat_5x$selected)
+
+# compute module connectivity:
+seurat_5x <- ModuleConnectivity(
+  seurat_5x,
+  groupd.by='selected',
+  group_name = 'Y'
+)
+saveRDS(seurat_5x, file=paste0(data_dir, "5xFAD_seurat_hdWGCNA.rds"))
+
+
+```
+
+
+Reset module names and colors
+
+```{r eval=FALSE}
+
+seurat_5x <- readRDS(file=paste0(data_dir, "5xFAD_seurat_hdWGCNA.rds"))
+head(GetModules(seurat_5x))
+
+################################################################################
+# Change module colors
+################################################################################
+
+# run RenameModules
+seurat_5x <- ResetModuleNames(
+  seurat_5x,
+  new_name = "SM"
+)
+
+modules <- GetModules(seurat_5x)
+mods <- levels(modules$module)
+mods <- mods[mods != 'grey']
+
+library(MetBrewer)
+
+modules <- GetModules(seurat_5x)
+mods <- levels(modules$module)
+mod_colors <- dplyr::select(modules, c(module, color)) %>%
+  distinct %>% arrange(module) %>% .$color
+n_colors <- length(mod_colors) -1
+
+new_colors <- paste0(met.brewer("Renoir", n=n_colors, type='discrete'))
+new_colors <- sample(new_colors, n_colors)
+
+seurat_5x <- ResetModuleColors(seurat_5x, new_colors)
+
+
+
+
+```
+
+Plotting
+
+```{r eval=FALSE}
+
+p <- PlotKMEs(seurat_5x, ncol=4)
+pdf(paste0(fig_dir, 'kME_distributions2.pdf'), width=12 , height=8)
+p
+dev.off()
+
+
+######################################################################
+# Plot ME featureplots
+######################################################################
+
+MEs <- GetMEs(seurat_5x)
+modules <- GetModules(seurat_5x)
+mods <- levels(modules$module)
+mods <- mods[mods!='grey']
+MEs <- MEs[,mods]
+
+meta <- seurat_5x@meta.data
+seurat_5x@meta.data <- cbind(meta, MEs)
+
+for(cur_mod in mods){
+  print(cur_mod)
+
+  p <- SampleFeaturePlot(
+    seurat_5x,
+    feature=cur_mod,
+    sample_labels = c("Condition", 'Sex', 'Age'),
+    sample_col = "SAMPLE",
+    ncol = 10,
+    raster=TRUE,
+    plot_max = 'q99',
+    plot_min = 0,
+    colfunc = inferno,
+    rev_colors=TRUE,
+    #colfunc=colorRampPalette(c('grey90', cur_color), bias=2),
+    #rev_colors=FALSE,
+    dpi=600,
+    combine=FALSE
+  )
+
+  p <- lapply(p, function(x){
+    x + theme(
+      plot.title = element_text(face='bold', size=15, vjust=-1),
+      plot.margin = margin(0,0,0,0)
+      # plot.margin = margin(-1,-1,-1,-1)
+
+    )
+  })
+
+  patch <- wrap_plots(p, ncol=8, widths=1, heights=1) + plot_layout(guides='collect')
+
+  pdf(paste0(fig_dir, 'ME_featureplots/', cur_mod, '_featureplot.pdf'), width=14, height=16)
+#  print(p)
+  print(patch)
+  dev.off()
+
+}
+
+seurat_5x@meta.data <- meta
+
+#############################################
+# plot the MEs just for representative samples
+##############################################
+
+# representative samples ordered by age
+rep_samples_5x <- c('675', '421', '784', '314')
+rep_samples_WT <- c('242', '721', '343', '313')
+rep_samples <- c(rep_samples_5x, rep_samples_WT)
+
+
+MEs <- GetMEs(seurat_5x)
+modules <- GetModules(seurat_5x)
+mods <- levels(modules$module)
+mods <- mods[mods!='grey']
+MEs <- MEs[,mods]
+
+meta <- seurat_5x@meta.data
+seurat_5x@meta.data <- cbind(meta, MEs)
+
+plot_list <- list()
+for(cur_mod in mods){
+  print(cur_mod)
+  cur_color <- modules %>% subset(module == cur_mod) %>% .$color %>% unique
+
+  p <- SampleFeaturePlot(
+    seurat_5x,
+    feature=cur_mod,
+    sample_labels = c("Condition", 'Age'),
+    sample_col = "SAMPLE",
+    samples_to_plot = rep_samples,
+    ncol = 10,
+    raster=TRUE,
+    plot_max = 'q99',
+    plot_min = 0,
+    colfunc = inferno,
+    rev_colors=TRUE,
+    #colfunc=colorRampPalette(c('grey90', cur_color), bias=2),
+    #rev_colors=FALSE,
+    dpi=600,
+    combine=FALSE
+  )
+
+  p <- lapply(p, function(x){
+    x <- x + theme(
+      plot.title = element_text(face='bold', size=20, vjust=-1),
+      plot.margin = margin(0,0,0,0)
+      # plot.margin = margin(-1,-1,-1,-1)
+    )
+    if(cur_mod != mods[1]){
+      x <- x + theme(
+        plot.title=element_blank()
+      )
+    }
+    x
+  })
+
+  p[[1]] <- p[[1]] + ylab(cur_mod) + theme(
+    axis.title.y = element_text(face='bold', size=20, color = cur_color)
+  )
+
+  plot_list <- c(plot_list, p)
+
+}
+
+patch <- wrap_plots(plot_list, ncol=8, widths=1, heights=1) + plot_layout(guides='collect')
+
+pdf(paste0(fig_dir, 'ME_featureplots_representative.pdf'), width=14, height=16)
+#  print(p)
+print(patch)
+dev.off()
+
+seurat_5x@meta.data <- meta
+
+################################################################################
+# ME violin plots:
+################################################################################
+
+
+library(ggpubr)
+
+MEs <- GetMEs(seurat_5x)
+modules <- GetModules(seurat_5x)
+mods <- levels(modules$module)
+mods <- mods[mods!='grey']
+MEs <- MEs[,mods]
+
+meta <- seurat_5x@meta.data
+seurat_5x@meta.data <- cbind(meta, MEs)
+
+
+cp_5x <- c("4 months" = "#E8C0FC", "6 months" = "#B57DD1",
+        "8 months"= "#8C64A1", "12 months" = "#643D78")
+
+cp_WT <- c("4 months" = "#BDFFDC", "6 months" = "#84DBB5",
+          "8 months"= "#45BA7C", "12 months" = "#14703F")
+
+
+color_df <- data.frame(
+  colour = as.character(mouse_cp),
+  group = names(mouse_cp)
+) %>% subset(group != 'unknown')
+
+p <- custom_vln(
+    subset(seurat_5x, Condition == '5X'),
+    features = mods,
+    group.by = 'annotation',
+    #groups = c('INH1 VIP+', 'INH4 LAMP5+', 'INH2 SST+',  'INH5 SST+',  'INH3 PVALB+', 'INH6 PVALB+'),
+    add_boxplot=FALSE,
+    split.by = 'Age',
+    split_colors= as.character(cp_5x),
+    add_colorbar=TRUE,
+    plot_ymin = NA,
+    comparisons=NA,
+    group_color_df = color_df
+  )
+
+
+pdf(paste0(fig_dir, 'ME_vln_stack_5x.pdf'), width=9, height=7)
+p
+dev.off()
+
+p <- custom_vln(
+    subset(seurat_5x, Condition == 'WT'),
+    features = mods,
+    group.by = 'annotation',
+    #groups = c('INH1 VIP+', 'INH4 LAMP5+', 'INH2 SST+',  'INH5 SST+',  'INH3 PVALB+', 'INH6 PVALB+'),
+    add_boxplot=FALSE,
+    split.by = 'Age',
+    split_colors= as.character(cp_WT),
+    add_colorbar=TRUE,
+    plot_ymin = NA,
+    comparisons=NA,
+    group_color_df = color_df
+  )
+
+pdf(paste0(fig_dir, 'ME_vln_stack_WT.pdf'), width=9, height=7)
+p
+dev.off()
+
+seurat_5x@meta.data <- meta
+
+
+################################################################################
+# MT correlation
+################################################################################
+
+
+# only plot samples that have amyloid scores:
+amyloid_samples <- seurat_5x@meta.data %>%
+  group_by(SAMPLE) %>%
+  summarise(Mean = mean(Amyloglo_Score_log)) %>%
+  filter(Mean != 0) %>% .$SAMPLE %>% as.character
+
+
+seurat_5x$amyloid_sample <- seurat_5x$SAMPLE %in% amyloid_samples
+
+# selected traits for MT correlation:
+seurat_5x$Sex <- factor(as.character(seurat_5x$Sex), levels=c('M', 'F'))
+traits <- c('Age', 'Sex', 'DAA_UCell', 'DAM_UCell', 'DOL_UCell', 'PIGs_UCell')
+
+
+# correlation in 5xFAD mice:
+
+seurat_5x <- ModuleTraitCorrelation(
+  seurat_5x,
+  traits = traits,
+  group.by = 'annotation',
+  subset_by = 'Condition',
+  subset_groups = '5X'
+)
+
+p <- PlotModuleTraitCorrelation(
+  seurat_5x,
+  label = 'fdr',
+  label_symbol = 'stars',
+  text_size = 2,
+  text_digits = 2,
+  trait_text_size = 5,
+  text_color = 'black',
+  high_color = 'red',
+  mid_color = 'white',
+  low_color = 'blue',
+  plot_max = 0.5,
+  group_order = levels(seurat_5x$annotation),
+  combine=TRUE
+)
+
+pdf(paste0(fig_dir, 'MT_correlation_5x.pdf'), width=5, height=10)
+p
+dev.off()
+
+
+
+# correlation in WT mice:
+seurat_5x <- ModuleTraitCorrelation(
+  seurat_5x,
+  traits = traits,
+  group.by = 'annotation',
+  subset_by = 'Condition',
+  subset_groups = 'WT'
+)
+
+p <- PlotModuleTraitCorrelation(
+  seurat_5x,
+  label = 'fdr',
+  label_symbol = 'stars',
+  text_size = 2,
+  text_digits = 2,
+  trait_text_size = 5,
+  text_color = 'black',
+  high_color = 'darkorchid3',
+  mid_color = 'white',
+  low_color = 'seagreen',
+  plot_max = 0.5,
+  group_order = levels(seurat_5x$annotation),
+  combine=TRUE
+)
+
+pdf(paste0(fig_dir, 'MT_correlation_WT.pdf'), width=5, height=10)
+p
+dev.off()
+
+
+
+# correlation of amyloid scores:
+
+traits <- c('Amyloglo_Score_log', 'Amyloglo_Score_log_Gi', 'OC_Score_log', 'OC_Score_log_Gi')
+
+seurat_5x <- ModuleTraitCorrelation(
+  seurat_5x,
+  traits = traits,
+  group.by = 'annotation',
+  subset_by = 'amyloid_sample',
+  subset_groups = TRUE
+)
+
+p <- PlotModuleTraitCorrelation(
+  seurat_5x,
+  label = 'fdr',
+  label_symbol = 'stars',
+  text_size = 2,
+  text_digits = 2,
+  trait_text_size = 5,
+  text_color = 'black',
+  high_color = 'darkorange2',
+  mid_color = 'white',
+  low_color = 'dodgerblue3',
+  plot_max = 0.5,
+  combine=TRUE
+)
+
+pdf(paste0(fig_dir, 'MT_correlation_amyloid.pdf'), width=6, height=8)
+p
+dev.off()
+
+
+# get the mt-correlation results
+mt_cor <- GetModuleTraitCorrelation(seurat_5x)
+
+names(mt_cor)
+
+################################################################################
+# Hubgene circle plots:
+################################################################################
+
+library(igraph)
+
+# individual module networks
+ModuleNetworkPlot(
+  seurat_5x,
+  outdir = paste0(fig_dir, 'hubNetworks/')
+)
+
+
+################################################################################
+# UMAP:
+################################################################################
+
+seurat_5x <- RunModuleUMAP(
+  seurat_5x,
+  n_hubs = 5,
+  n_neighbors=15,
+  min_dist=0.6,
+  spread=5
+  #target_weight=0.1,
+  #supervised=TRUE
+)
+
+
+# get the hub gene UMAP table from the seurat object
+umap_df <- GetModuleUMAP(
+  seurat_5x
+)
+
+# plot with ggplot
+p <- ggplot(umap_df, aes(x=UMAP1, y=UMAP2)) +
+  geom_point(
+   color=umap_df$color,
+   size=umap_df$kME*2
+  ) +
+  umap_theme()
+
+pdf(paste0(fig_dir, '5x_hubgene_umap_ggplot.pdf'), width=5, height=5)
+p
+dev.off()
+
+library(reshape2)
+library(igraph)
+pdf(paste0(fig_dir, '5x_hubgene_umap_igraph.pdf'), width=9, height=9)
+ModuleUMAPPlot(
+  seurat_5x,
+  edge.alpha=0.5,
+  sample_edges=TRUE,
+  vertex.label.cex = 0.1, #font size
+  keep_grey_edges=FALSE,
+  edge_prop=0.1, # taking the top 20% strongest edges in each module
+  label_hubs=5 # how many hub genes to plot per module?
+)
+dev.off()
+
+```
+
+
+Enrichment analysis
+
+```{r eval=FALSE}
+
+library(enrichR)
+
+dbs <-c('GO_Biological_Process_2021','GO_Cellular_Component_2021','GO_Molecular_Function_2021','WikiPathway_2021_Mouse', 'KEGG_2021_Mouse')
+
+# compute GO terms:
+seurat_5x <- RunEnrichr(seurat_5x, dbs=dbs, max_genes=200)
+
+# inspect the enrichr table:
+enrichr_df <- GetEnrichrTable(seurat_5x) %>% subset(P.value < 0.05)
+write.table(enrichr_df, quote=FALSE, row.names=FALSE, sep='\t', file=paste0(data_dir, '5x_enrichr.tsv'))
+
+
+
+################################################################################
+#Plot selected GO terms:
+#################################################################################
+
+
+modules <- GetModules(seurat_5x)
+color_df <- modules %>% subset(module!='grey') %>%
+  select(c(module, color)) %>% distinct %>%
+  mutate(module=droplevels(module)) %>%
+  rename(c(group=module, colour=color))
+mods <- levels(modules$module); mods <- mods[mods != 'grey']
+
+color_df$group <- factor(as.character(color_df$group), levels=mods)
+
+# helper function to wrap text
+wrapText <- function(x, len) {
+    sapply(x, function(y) paste(strwrap(y, len), collapse = "\n"), USE.NAMES = FALSE)
+}
+
+combined_output <- GetEnrichrTable(seurat_5x)
+selected_terms <- read.delim('data/5x_enrichr_selected.txt', sep='\t', header=1)
+
+# subset selected terms
+selected_terms <- subset(combined_output, Term %in% selected_terms$Term & P.value < 0.05)
+
+selected_terms$group <- factor(
+  as.character(selected_terms$module),
+  levels = mods
+)
+
+# set max pval
+
+quantile(-log(selected_terms$P.value), 0.95)
+max_p <- 10
+
+selected_terms$logp <- -log(selected_terms$P.value)
+selected_terms$logp <- ifelse(selected_terms$logp > max_p, max_p, selected_terms$logp)
+
+# remove GO Term ID
+selected_terms$Term <- str_replace(selected_terms$Term, " \\s*\\([^\\)]+\\)", "")
+
+selected_terms <- selected_terms %>%
+  arrange(group)
+
+
+selected_terms$wrap <- wrapText(selected_terms$Term, 35)
+
+selected_terms$Term <- factor(
+  as.character(selected_terms$Term),
+  levels = rev(unique(as.character(selected_terms$Term)))
+)
+
+# GO Term dot plot
+
+p <- selected_terms %>%
+  ggplot(aes(x = group, y = Term, color =logp, size=log(Combined.Score))) +
+  geom_point() +
+  scale_color_stepsn(colors=rev(magma(256))) +
+  RotatedAxis() + xlab('') + ylab('') +
+  theme(
+    axis.title.x = element_blank(),
+    axis.title.y = element_blank(),
+    panel.border = element_rect(size=1, color='black', fill=NA),
+    axis.line.x = element_blank(),
+    axis.line.y = element_blank(),
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank(),
+    plot.margin = margin(0,0,0,0),
+    panel.grid = element_line(size=0.25, color='lightgrey')
+  )+ labs(
+    color = bquote("-log"[10]~"(P)"),
+    size= bquote("log"[10]~"(Enrich)")
+  )
+
+
+# make the colorbar as its own heatmap
+color_df$var <- 1
+cp <- color_df$colour; names(cp) <- color_df$group
+colorbar <- color_df %>%
+  ggplot(aes(x=group, y=var, fill=group)) +
+  geom_tile() +
+  scale_fill_manual(values=cp) +
+  coord_equal() +
+  NoLegend() + RotatedAxis() +
+  theme(
+    plot.title=element_blank(),
+    axis.line=element_blank(),
+    axis.ticks.y =element_blank(),
+    axis.text.y = element_blank(),
+    axis.title = element_blank(),
+    plot.margin=margin(0,0,0,0),
+  )
+
+
+
+
+pdf(paste0(fig_dir, '5x_selected_GO_terms.pdf'), width=7.5, height=7)
+p / colorbar #+ plot_layout(heights=c(20,1))
+dev.off()
+
+
+
+
+
+```
+
+Overlap with PIGs:
+
+```{r eval=FALSE}
+
+library(GeneOverlap)
+
+# Chen 2021 (compilation of multiple studies)
+homeostatic <- c("Tmem119", "P2ry12", "P2ry13", "Csf1r",
+				 "Hexb", "Cst3", "Cx3cr1", "Siglech",
+				 "Cd33", "Tgfbr1", "Sall1", "Selplg",
+				 "Mef2a", "Jun", "Ms4a6d", "Bin1", "Serinc3")
+
+DAM <- c("Cd9", "Apoe", "Trem2", "Tyrobp",
+		"Cd63", "Lgals3", "Axl", #"Clec7a",
+		"Spp1", "Ctsb", "Lpl", # "Cstz",
+		"Ctsl", "Ctsd", "Itgax", "B2m",
+		"Cst7", "Csf1", "Gpnmb", "Igf1",
+		"Irf8", "Fth1", "Lyz1", # "Lilrb4",
+		"Ccl3", "Ccl6", "Timp2")
+
+IFN <- c("Irf7", "Ifitm3", "Ifit2", "Ifit3",
+		 "Cxcl10", "Oasl2", "Cd69", "Isg15",
+		 "Usp18")
+
+MHC <- c("H2-D1", "H2-K1", "H2-Eb1", "H2-Aa",
+		 "H2-Ab1", "H2-DMa", "Cd74")
+
+Cyc_M <- c("Top2a", "Mki67", "Cenpe", "Mcm5",
+		   "Birc5", "H2afz", "H2afv")
+
+# Habib et al 2020
+DAA_markers <- list()
+DAA_markers$GFAP_low <- c("Luzp2", "Slc7a10", "Mfge8")
+DAA_markers$GFAP_high <- c("Gfap", "Id3", "Aqp4", "Myoc", "Id1", "Fabp7")
+DAA_markers$DAA <- c("Gfap", "Ctsb", "Vim", "Osmr", "Serpina3n", "Gsn", "Ggta1")
+
+# Kenigsbuch et al 2022
+DOL <- read.csv("/dfs7/swaruplab/emiyoshi/Visium_5X/genescores/oligodendrocytes/DOL_genes.csv")
+
+# from our old paper check the citation again
+DOL_markers <- list("DOL" = DOL[,1], 'NFOL'=c('Tcf7l2', 'Casr', 'Cemip2', 'Itpr2'),
+								  'MFOL'=c('Mal', 'Mog', 'Plp1', 'Opalin', 'Serinc5', 'Ctps1'),
+								  'MOL'=c('Klk6', 'Apod', 'Slc5a11', 'Pde1a'))
+
+# Load PIGs from Chen et al 2020
+pig_table <- read.csv('~/swaruplab/smorabit/analysis/ADDS_2021/data/chen_modules.csv')
+pigs <- subset(pig_table, module == 'PIG') %>% .$gene
+oligs <- subset(pig_table, module == 'OLIG') %>% .$gene
+
+
+gene_lists <- list("DAM" = DAM, 'DAA' = DAA_markers$DAA, 'DOL' = DOL_markers$DOL, 'PIGs' = pigs)
+
+modules <- GetModules(seurat_5x)
+mods <- levels(modules$module); mods <- mods[mods != 'grey']
+genome.size <- nrow(seurat_5x)
+
+# run overlaps between module gene lists and DEG lists:
+overlap_df <- do.call(rbind, lapply(mods, function(cur_mod){
+  cur_m1_genes <- modules %>% subset(module == cur_mod) %>% .$gene_name
+  cur_overlap_df <- do.call(rbind, lapply(names(gene_lists), function(cur_list){
+    print(paste0(cur_mod, ' ', cur_list))
+    cur_m2_genes <- gene_lists[[cur_list]]
+    cur_overlap <- testGeneOverlap(newGeneOverlap(
+        cur_m1_genes,
+        cur_m2_genes,
+        genome.size=genome.size
+    ))
+    c(cur_overlap@odds.ratio, cur_overlap@pval, cur_overlap@Jaccard, length(cur_overlap@intersection))
+  })) %>% as.data.frame
+  colnames(cur_overlap_df) <- c('odds_ratio', 'pval', 'Jaccard', 'size_intersection')
+  cur_overlap_df$module <- cur_mod
+  cur_overlap_df$gene_list <- names(gene_lists)
+
+  # module color:
+  #cur_overlap_df$color <- modules %>% subset(module == cur_mod) %>% .$color %>% unique
+  cur_overlap_df
+}))
+
+overlap_df$module <- factor(as.character(overlap_df$module), levels=mods)
+
+# re-order
+tmp <- unlist(lapply(names(gene_lists), function(cur_list){
+  cur <- subset(overlap_df, gene_list==cur_list)
+  which(cur$odds_ratio == max(cur$odds_ratio))
+}))
+
+overlap_df$gene_list <- factor(as.character(overlap_df$gene_list), levels=rev(names(gene_lists)[order(tmp)]))
+
+# adjust for multiple comparisons:
+overlap_df$fdr <- p.adjust(overlap_df$pval, method='fdr')
+
+# significance level:
+overlap_df$Significance <- gtools::stars.pval(overlap_df$fdr)
+overlap_df$Significance <- ifelse(
+  overlap_df$Significance == '.', '',
+  overlap_df$Significance
+)
+
+subset(overlap_df, module == 'SM6' & gene_list == 'PIGs')
+
+
+# plot the results as a heatmap:
+maxval <- 300
+plot_df <- overlap_df
+plot_df$odds_ratio <- ifelse(plot_df$odds_ratio > maxval, maxval, plot_df$odds_ratio)
+plot_df$textcolor <- ifelse(plot_df$odds_ratio > 0.7*maxval, 'white', 'black')
+
+
+p <- plot_df %>%
+  ggplot(aes(x=module, y=gene_list, fill=odds_ratio)) +
+  geom_tile() +
+  geom_text(label=plot_df$Significance, vjust = 0.72, color=plot_df$textcolor) +
+  scale_fill_gradient(low='white', high='blue') +
+  RotatedAxis() +
+  labs(fill = 'Odds ratio') +
+  theme(
+    panel.border = element_rect(fill=NA, color='black', linewidth=1),
+    axis.line.x = element_blank(),
+    axis.line.y = element_blank(),
+    axis.title.x = element_blank(),
+    axis.title.y = element_blank(),
+    #axis.text.x = element_blank(),
+    #axis.ticks.x = element_blank(),
+    #axis.text.y = element_blank(),
+    #axis.ticks.y = element_blank(),
+    plot.margin=margin(0,0,0,0)
+  ) +
+  coord_equal()
+
+pdf(paste0(fig_dir, 'module_overlap_heatmap.pdf'), width=5, height=3, useDingbats=FALSE)
+p
+dev.off()
+
+
+################################################################
+# Overlap analysis with the amyloid DEGs
+################################################################
+
+# load the mouse amyloid DEGs:
+degs <- read.csv(file='/dfs7/swaruplab/smorabit/analysis/ADDS_2021/visium/5xFAD/voyager/data/5x_Amyloglo_Score_log_Gi_DEGs.csv')
+degs <- degs %>% subset(q_value < 0.05 & normalized_effect > 0)
+
+# load human amyloid-degs
+human_degs <- read.csv(file='/dfs7/swaruplab/smorabit/analysis/ADDS_2021/visium/human/voyager/data/Amyloglo_Score_log_Gi_glm_GM_DEGs.csv')
+
+# load mouse <-> human gene name table:
+hg38_mm10_genes <- read.table(
+  "/dfs7/swaruplab/smorabit/resources/hg38_mm10_orthologs_2021.txt",
+  sep='\t',
+  header=TRUE
+)
+colnames(hg38_mm10_genes) <-c('hg38_id', 'mm10_id', 'mm10_name', 'hg38_name')
+hg38_mm10_genes <- dplyr::select(hg38_mm10_genes, c(hg38_name, mm10_name, hg38_id, mm10_id))
+
+hg38_mm10_genes <- subset(hg38_mm10_genes, mm10_name != '' & hg38_name != '')
+
+# need to make sure that there's only one entry for each gene in hg38_mm10_genes
+mm10_genes <- unique(hg38_mm10_genes$mm10_name)
+hg38_genes <- unique(hg38_mm10_genes$hg38_name)
+hg38_mm10_genes <- hg38_mm10_genes[match(mm10_genes, hg38_mm10_genes$mm10_name),]
+
+# convert to human names
+ix <- match(human_degs$gene, hg38_mm10_genes$hg38_name)
+human_degs$gene_id <- hg38_mm10_genes$mm10_name[ix]
+human_degs <- subset(human_degs, !is.na(gene_id))
+human_degs$group <- 'human GM'
+human_degs <- human_degs[,colnames(degs)]
+
+degs <- rbind(degs, human_degs)
+
+modules <- GetModules(seurat_5x)
+mods <- levels(modules$module); mods <- mods[mods != 'grey']
+genome.size <- nrow(seurat_5x)
+groups <- c(levels(seurat_5x$annotation), 'human GM')
+
+# run overlaps between module gene lists and DEG lists:
+overlap_df <- do.call(rbind, lapply(mods, function(cur_mod){
+  cur_m1_genes <- modules %>% subset(module == cur_mod) %>% .$gene_name
+  cur_overlap_df <- do.call(rbind, lapply(groups, function(cur_group){
+    print(paste0(cur_mod, ' ', cur_group))
+    cur_m2_genes <- subset(degs, group == cur_group) %>% .$gene
+    cur_overlap <- testGeneOverlap(newGeneOverlap(
+        cur_m1_genes,
+        cur_m2_genes,
+        genome.size=genome.size
+    ))
+    c(cur_overlap@odds.ratio, cur_overlap@pval, cur_overlap@Jaccard, length(cur_overlap@intersection))
+  })) %>% as.data.frame
+  colnames(cur_overlap_df) <- c('odds_ratio', 'pval', 'Jaccard', 'size_intersection')
+  cur_overlap_df$module <- cur_mod
+  cur_overlap_df$group <- groups
+
+  cur_overlap_df
+}))
+
+overlap_df$module <- factor(as.character(overlap_df$module), levels=mods)
+
+# re-order
+tmp <- unlist(lapply(groups, function(cur_group){
+  cur <- subset(overlap_df, group==cur_group)
+  which(cur$odds_ratio == max(cur$odds_ratio))
+}))
+
+overlap_df$group <- factor(as.character(overlap_df$group), levels=rev(groups[order(tmp)]))
+
+# adjust for multiple comparisons:
+overlap_df$fdr <- p.adjust(overlap_df$pval, method='fdr')
+
+# significance level:
+overlap_df$Significance <- gtools::stars.pval(overlap_df$fdr)
+overlap_df$Significance <- ifelse(
+  overlap_df$Significance == '.', '',
+  overlap_df$Significance
+)
+
+
+# plot the results as a heatmap:
+maxval <- 100
+plot_df <- overlap_df
+plot_df$odds_ratio <- ifelse(plot_df$odds_ratio > maxval, maxval, plot_df$odds_ratio)
+plot_df$textcolor <- ifelse(plot_df$odds_ratio > 0.7*maxval, 'white', 'black')
+
+
+p <- plot_df %>%
+  ggplot(aes(x=module, y=group, fill=odds_ratio)) +
+  geom_tile() +
+  geom_text(label=plot_df$Significance, vjust = 0.72, color=plot_df$textcolor) +
+  scale_fill_gradient(low='white', high='blue') +
+  RotatedAxis() +
+  labs(fill = 'Odds ratio') +
+  theme(
+    panel.border = element_rect(fill=NA, color='black', linewidth=1),
+    axis.line.x = element_blank(),
+    axis.line.y = element_blank(),
+    axis.title.x = element_blank(),
+    axis.title.y = element_blank(),
+    #axis.text.x = element_blank(),
+    #axis.ticks.x = element_blank(),
+    #axis.text.y = element_blank(),
+    #axis.ticks.y = element_blank(),
+    plot.margin=margin(0,0,0,0)
+  ) +
+  coord_equal()
+
+pdf(paste0(fig_dir, 'module_overlap_amyloid_heatmap.pdf'), width=5, height=4, useDingbats=FALSE)
+p
+dev.off()
+
+
+
+# overlap of SM6 and PIGs:
+
+library(eulerr)
+
+sm6_genes <- modules %>% subset(module == 'SM6') %>% .$gene
+
+
+
+overlap_list <- c(
+  'SM6' = length(setdiff(sm6_genes, pigs)),
+  'PIGs' = length(setdiff(pigs, sm6_genes)),
+  'SM6&PIGs' =  length(unique(intersect(pigs, sm6_genes)))
+)
+
+pdf(paste0(fig_dir, 'SM6_PIGs_overlap.pdf'), width=4, height=4)
+plot(euler(overlap_list), quantities = TRUE)
+dev.off()
+
+
+
+
+
+```
+
+Project Modules from Chen et al 2020
+
+```{r eval=FALSE}
+
+chen_modules <- read.table('data/chen_2020_modules.txt', sep='\t', header=1)
+
+seurat_5x <- ProjectModules(
+  seurat_5x,
+  modules = chen_modules,
+  group.by.vars = "seqbatch",
+  seurat_ref = NULL,
+  wgcna_name = "None",
+  wgcna_name_proj = 'chen_2020'
+)
+
+seurat_5x <- SetActiveWGCNA(seurat_5x, 'vis')
+
+
+
+#############################################
+# plot the MEs just for representative samples
+##############################################
+
+seurat_5x <- SetActiveWGCNA(seurat_5x, 'chen_2020')
+
+
+# representative samples ordered by age
+rep_samples_5x <- c('675', '421', '784', '314')
+rep_samples_WT <- c('242', '721', '343', '313')
+rep_samples <- c(rep_samples_5x, rep_samples_WT)
+
+
+MEs <- GetMEs(seurat_5x)
+modules <- GetModules(seurat_5x)
+mods <- levels(modules$module)
+mods <- mods[mods!='grey']
+MEs <- MEs[,mods]
+
+meta <- seurat_5x@meta.data
+seurat_5x@meta.data <- cbind(meta, MEs)
+
+plot_list <- list()
+for(cur_mod in mods){
+  print(cur_mod)
+  cur_color <- modules %>% subset(module == cur_mod) %>% .$color %>% unique
+
+  p <- SampleFeaturePlot(
+    seurat_5x,
+    feature=cur_mod,
+    sample_labels = c("Condition", 'Age'),
+    sample_col = "SAMPLE",
+    samples_to_plot = rep_samples,
+    ncol = 10,
+    raster=TRUE,
+    plot_max = 'q99',
+    plot_min = 0,
+    colfunc = inferno,
+    rev_colors=TRUE,
+    #colfunc=colorRampPalette(c('grey90', cur_color), bias=2),
+    #rev_colors=FALSE,
+    dpi=600,
+    combine=FALSE
+  )
+
+  p <- lapply(p, function(x){
+    x <- x + theme(
+      plot.title = element_text(face='bold', size=20, vjust=-1),
+      plot.margin = margin(0,0,0,0)
+      # plot.margin = margin(-1,-1,-1,-1)
+    )
+    if(cur_mod != mods[1]){
+      x <- x + theme(
+        plot.title=element_blank()
+      )
+    }
+    x
+  })
+
+  p[[1]] <- p[[1]] + ylab(cur_mod) + theme(
+    axis.title.y = element_text(face='bold', size=20, color = cur_color)
+  )
+
+  plot_list <- c(plot_list, p)
+
+}
+
+patch <- wrap_plots(plot_list, ncol=8, widths=1, heights=1) + plot_layout(guides='collect')
+
+pdf(paste0(fig_dir, 'chen2020_ME_featureplots_representative.pdf'), width=14, height=18)
+#  print(p)
+print(patch)
+dev.off()
+
+seurat_5x@meta.data <- meta
+
+
+################################################################################
+# ME violin plots:
+################################################################################
+
+
+library(ggpubr)
+
+MEs <- GetMEs(seurat_5x)
+modules <- GetModules(seurat_5x)
+mods <- levels(modules$module)
+mods <- mods[mods!='grey']
+MEs <- MEs[,mods]
+
+meta <- seurat_5x@meta.data
+seurat_5x@meta.data <- cbind(meta, MEs)
+
+
+cp_5x <- c("4 months" = "#E8C0FC", "6 months" = "#B57DD1",
+        "8 months"= "#8C64A1", "12 months" = "#643D78")
+
+cp_WT <- c("4 months" = "#BDFFDC", "6 months" = "#84DBB5",
+          "8 months"= "#45BA7C", "12 months" = "#14703F")
+
+
+color_df <- data.frame(
+  colour = as.character(mouse_cp),
+  group = names(mouse_cp)
+) %>% subset(group != 'unknown')
+
+p <- custom_vln(
+    subset(seurat_5x, Condition == '5X'),
+    features = mods,
+    group.by = 'annotation',
+    #groups = c('INH1 VIP+', 'INH4 LAMP5+', 'INH2 SST+',  'INH5 SST+',  'INH3 PVALB+', 'INH6 PVALB+'),
+    add_boxplot=FALSE,
+    split.by = 'Age',
+    split_colors= as.character(cp_5x),
+    add_colorbar=TRUE,
+    plot_ymin = NA,
+    comparisons=NA,
+    group_color_df = color_df
+  )
+
+
+pdf(paste0(fig_dir, 'chen_2020_ME_vln_stack_5x.pdf'), width=9, height=7)
+p
+dev.off()
+
+p <- custom_vln(
+    subset(seurat_5x, Condition == 'WT'),
+    features = mods,
+    group.by = 'annotation',
+    #groups = c('INH1 VIP+', 'INH4 LAMP5+', 'INH2 SST+',  'INH5 SST+',  'INH3 PVALB+', 'INH6 PVALB+'),
+    add_boxplot=FALSE,
+    split.by = 'Age',
+    split_colors= as.character(cp_WT),
+    add_colorbar=TRUE,
+    plot_ymin = NA,
+    comparisons=NA,
+    group_color_df = color_df
+  )
+
+pdf(paste0(fig_dir, 'chen_2020_ME_vln_stack_WT.pdf'), width=9, height=7)
+p
+dev.off()
+
+seurat_5x@meta.data <- meta
+
+################################################################################
+# Module overlap analysis between Chen et al modules and modules from this study
+################################################################################
+
+group1 <- 'vis'
+group2 <- 'chen_2020'
+
+m1 <- GetModules(seurat_5x, wgcna_name=group1)
+m2 <- GetModules(seurat_5x, wgcna_name=group2)
+
+mods1 <- levels(m1$module); mods1 <- mods1[mods1 != 'grey']
+mods2 <- levels(m2$module); mods2 <- mods2[mods2 != 'grey']
+
+genome.size <- nrow(seurat_5x)
+
+
+# run overlaps between module gene lists and DEG lists:
+overlap_df <- do.call(rbind, lapply(mods1, function(cur_mod1){
+  cur_m1_genes <- m1 %>% subset(module == cur_mod1) %>% .$gene_name
+  cur_overlap_df <- do.call(rbind, lapply(mods2, function(cur_mod2){
+    print(paste0(cur_mod1, ' ', cur_mod2))
+    cur_m2_genes <- m2 %>% subset(module == cur_mod2) %>% .$gene_name
+    cur_overlap <- testGeneOverlap(newGeneOverlap(
+        cur_m1_genes,
+        cur_m2_genes,
+        genome.size=genome.size
+    ))
+    c(cur_overlap@odds.ratio, cur_overlap@pval, cur_overlap@Jaccard, length(cur_overlap@intersection))
+  })) %>% as.data.frame
+  colnames(cur_overlap_df) <- c('odds_ratio', 'pval', 'Jaccard', 'size_intersection')
+  cur_overlap_df$m1 <- cur_mod1
+  cur_overlap_df$m2 <- mods2
+
+  # module color:
+  #cur_overlap_df$color <- modules %>% subset(module == cur_mod) %>% .$color %>% unique
+  cur_overlap_df
+}))
+
+overlap_df$m1 <- factor(as.character(overlap_df$m1), levels=mods1)
+overlap_df$m2 <- factor(as.character(overlap_df$m2), levels=mods2)
+
+# re-order
+tmp <- unlist(lapply(mods2, function(cur_mod2){
+  cur <- subset(overlap_df, m2==cur_mod2)
+  which(cur$odds_ratio == max(cur$odds_ratio))
+}))
+
+overlap_df$m2 <- factor(as.character(overlap_df$m2), levels=rev(mods2[order(tmp)]))
+
+# adjust for multiple comparisons:
+overlap_df$fdr <- p.adjust(overlap_df$pval, method='fdr')
+
+# significance level:
+overlap_df$Significance <- gtools::stars.pval(overlap_df$fdr)
+overlap_df$Significance <- ifelse(
+  overlap_df$Significance == '.', '',
+  overlap_df$Significance
+)
+
+# plot the results as a heatmap:
+maxval <- 50
+plot_df <- overlap_df
+plot_df$odds_ratio <- ifelse(plot_df$odds_ratio > maxval, maxval, plot_df$odds_ratio)
+plot_df$textcolor <- ifelse(plot_df$odds_ratio > 0.7*maxval, 'white', 'black')
+
+
+p <- plot_df %>%
+  ggplot(aes(x=m1, y=m2, fill=odds_ratio)) +
+  geom_tile() +
+  geom_text(label=plot_df$Significance, vjust = 0.72, color=plot_df$textcolor) +
+  scale_fill_gradient(low='white', high='blue') +
+  RotatedAxis() +
+  labs(fill = 'Odds ratio') +
+  theme(
+    panel.border = element_rect(fill=NA, color='black', size=1),
+    axis.line.x = element_blank(),
+    axis.line.y = element_blank(),
+    #axis.title.x = element_blank(),
+    #axis.title.y = element_blank(),
+    #axis.text.x = element_blank(),
+    #axis.ticks.x = element_blank(),
+  #  axis.text.y = element_blank(),
+    # axis.ticks.y = element_blank(),
+    plot.margin=margin(0,0,0,0)
+  ) +
+  coord_equal() +
+  xlab('Current study') +
+  ylab('Chen et al. 2020')
+
+
+pdf(paste0(fig_dir, 'chen_2020_module_overlap.pdf'), width=5, height=5)
+p
+dev.off()
+
+
+```

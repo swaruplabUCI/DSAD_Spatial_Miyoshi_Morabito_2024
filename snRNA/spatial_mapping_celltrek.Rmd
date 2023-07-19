@@ -1,0 +1,1185 @@
+
+```{r eval=FALSE}
+
+library(Seurat)
+library(tidyverse)
+library(cowplot)
+library(Matrix)
+library(viridis)
+library(harmony)
+library(ggpubr)
+library(patchwork)
+library(RColorBrewer)
+library(ggrepel)
+library(CellTrek)
+
+source("/pub/smorabit/hdWGCNA/bin/spatial_functions.R")
+source('/dfs7/swaruplab/smorabit/analysis/scWGCNA/bin/spatial_functions.R')
+
+
+# 2,000 MB limit:
+options(future.globals.maxSize= 2000*1024^2)
+
+
+setwd("/dfs7/swaruplab/smorabit/analysis/ADDS_2021/splitseq/integration/spatial_mapping/")
+
+fig_dir <- "figures/"
+data_dir <- "data/"
+
+umap_theme() <- theme(
+  axis.line=element_blank(),
+  axis.text.x=element_blank(),
+  axis.text.y=element_blank(),
+  axis.ticks=element_blank(),
+  axis.title.x=element_blank(),
+  axis.title.y=element_blank(),
+  panel.background=element_blank(),
+  panel.border=element_blank(),
+  panel.grid.major=element_blank(),
+  panel.grid.minor=element_blank(),
+  plot.background=element_blank()
+)
+
+# load visium & split-seq seurat objects:
+seurat_vis <- readRDS('/dfs7/swaruplab/smorabit/analysis/ADDS_2021/visium/human/data/ADDS_seurat_processed.rds')
+
+# seurat_obj <- readRDS("/dfs7/swaruplab/smorabit/analysis/ADDS_2021/splitseq/data/ADDS_integrated_scvi.rds")
+
+# load ADDS dataset:
+seurat_obj <- readRDS(file="/dfs7/swaruplab/smorabit/analysis/ADDS_2021/splitseq/integration/data/ADDS_integrated.rds" )
+
+# only get the FCX:
+seurat_obj <- subset(seurat_obj, Tissue != 'PCC')
+
+# saveRDS(seurat_obj, file="/dfs7/swaruplab/smorabit/analysis/ADDS_2021/splitseq/integration/data/ADDS_integrated_FCX.rds")
+
+# add barcode:
+seurat_obj$bc <- colnames(seurat_obj)
+seurat_vis$bc <- colnames(seurat_vis)
+
+var_df <- read.delim(file = "/dfs7/swaruplab/smorabit/analysis/ADDS_2021/splitseq/integration/data/ADDS_subclusters_var.tsv", sep='\t')
+
+VariableFeatures(seurat_obj) <- var_df$X
+
+
+
+human_cp <- c("WM1" = "#64BCDB", "WM2" = "#62A7D7", "WM3" = "#99C8D7",
+      "L1" = "#8B3D5A", "L2/3" = "#E7BDE1", "L3/4" = "#E6A4CD",
+      "L3/4/5" = "#CF8fBA3", "L5/6" = "#9E6D7F", "L6b" = "#CDAEB9")
+
+
+
+```
+
+it seems like we get fewer cells mapped the more samples we include togetgher so it
+might be best to just map one sample at a time.
+
+```{r eval=FALSE}
+
+# variables from argparse:
+index <- 1873
+cell_id_col <- 'cell_identity'
+n_iterations <- 3 # how many times to try mapping with celltrek
+
+# set up variables for visium:
+vis_sample_col <- 'Sample'
+sc_sample_col <- 'Sample'
+vis_samples <- unique(as.character(seurat_vis@meta.data[[vis_sample_col]]))
+sc_samples <- unique(as.character(seurat_obj@meta.data[[sc_sample_col]]))
+
+# get index of the visium & sc samples
+vis_sample_ind <- ceiling(index / length(sc_samples))
+sc_sample_ind <- 1 + (index %% length(sc_samples))
+vis_sample_ind
+sc_sample_ind
+
+# get the name of the visium & sc samples
+cur_vis_sample <- vis_samples[vis_sample_ind]
+cur_sc_sample <- sc_samples[sc_sample_ind]
+
+# output name is the concatenation of the sample names:
+outname <- paste0('vis_', cur_vis_sample, '-sc_', cur_sc_sample)
+
+# get the current visium sample and make sure to set up the image
+cur_vis <- seurat_vis[,seurat_vis@meta.data[[vis_sample_col]] == cur_vis_sample]
+cur_image <- names(cur_vis@images)[sapply(names(cur_vis@images), function(x){nrow(cur_vis@images[[x]]@coordinates) > 0})]
+cur_vis@images <- list(cur_image = cur_vis@images[[cur_image]])
+
+# get the current sc seurat object
+cur_seurat <- seurat_obj[,seurat_obj@meta.data[[sc_sample_col]] == cur_sc_sample]
+cur_seurat$orig.ident <- cur_seurat@meta.data[[sc_sample_col]]
+
+# add barcode column to vis & sc:
+cur_vis$bc <- colnames(cur_vis)
+cur_seurat$bc <- colnames(cur_seurat)
+
+# this code gets a range of samples if we are mapping more than one at the same time
+# not used here:
+# index <- 12
+# n_samples_total <- length(unique(seurat_obj@meta.data[[sc_sample_col]]))
+# n_sc_samples <- 1
+#
+# sc_ind_start <- ((index - 1) * n_sc_samples) + 1
+# sc_ind_end <- sc_ind_start + n_sc_samples - 1
+# if(sc_ind_end > n_samples_total){
+#   sc_ind_end <- n_samples_total
+# }
+# sc_ind_start
+# sc_ind_end
+# cur_sc_slice <- sc_ind_start:sc_ind_end
+
+
+# co-embedding
+ct_train <- CellTrek::traint(
+  st_data=cur_vis,
+  sc_data=cur_seurat,
+  sc_assay='RNA',
+  cell_names=cell_id_col
+)
+
+# add a label
+# ct_train$label <- ifelse(
+#   ct_train$type == 'sc', as.character(ct_train$cell_identity),
+#   as.character(ct_train$annotation)
+# )
+
+saveRDS(ct_train, file=paste0(data_dir, outname, '_coembed.rds'))
+#ct_train <- readRDS(file=paste0(data_dir, 'test_celltrek_sample.rds'))
+
+#
+#
+#
+# p <- DimPlot(ct_train, split.by = 'type', group.by = 'label', label=TRUE, raster=FALSE) + umap_theme()
+#
+#
+# pdf(paste0(fig_dir, 'test_coembedding_sample.pdf'), width=16, height=8)
+# p
+# dev.off()
+
+
+
+obj_list <- list()
+mapped_bcs <- c(); keep <- colnames(ct_train)
+for(i in 1:n_iterations){
+  print(i)
+  tic()
+  ct_obj <- CellTrek::celltrek(
+    st_sc_int=ct_train[,keep],
+    int_assay='traint',
+    sc_assay = 'RNA',
+    reduction='pca',
+    intp=T, intp_pnt=10000,
+    intp_lin=F, nPCs=30,
+    ntree=1000,
+    dist_thresh=0.75,
+    top_spot=1, spot_n=5,
+    repel_r=20,
+    repel_iter=20,
+    keep_model=T,
+    verbose=TRUE
+  )$celltrek
+  time_elapsed <- toc()
+
+  # which cells were not mapped??
+  mapped_bcs <- c(mapped_bcs, unique(ct_obj$bc))
+  print(length(mapped_bcs) / ncol(cur_seurat))
+
+  keep <- ifelse(ct_train$type == 'st', TRUE, !(as.character(ct_train$bc) %in% mapped_bcs))
+  #table(keep)
+
+  obj_list[[i]] <- ct_obj
+
+}
+
+ct_coords <- do.call(rbind, lapply(obj_list, function(x){
+  x@reductions$celltrek@cell.embeddings
+}))
+
+ix <- match(rownames(ct_coords), colnames(ct_train))
+ct_meta <- ct_train@meta.data[ix,colnames(cur_seurat@meta.data)]
+ct_meta <- cbind(ct_meta, ct_coords)
+write.csv(ct_meta, quote=FALSE, file=paste0(outname, '_mapped_coords.csv'))
+
+
+
+
+
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+# # https://github.com/navinlabcode/CellTrek/issues/13
+#
+# library(tictoc)
+# tic()
+# ct_obj <- CellTrek::celltrek(
+#   st_sc_int=ct_train,
+#   int_assay='traint',
+#   # sc_data=cur_seurat,
+#   #sc_data = seurat_obj,
+#   sc_assay = 'RNA',
+#   reduction='pca',
+#   intp=T, intp_pnt=10000,
+#   intp_lin=F, nPCs=30,
+#   ntree=1000,
+#   dist_thresh=0.75,
+#   top_spot=1, spot_n=5,
+#   repel_r=20,
+#   repel_iter=20,
+#   keep_model=T,
+#   verbose=TRUE
+# )$celltrek
+# time_elapsed <- toc()
+#
+# #saveRDS(ct_obj, file=paste0(data_dir, 'test_celltrek_obj.rds'))
+# #ct_obj <- readRDS(file=paste0(data_dir, 'test_celltrek_obj.rds'))
+#
+# # only 38% of cells were mapped!!!
+# ncol(ct_obj) / ncol(cur_seurat)
+#
+# dim(ct_obj)
+#
+# # which cells were not mapped??
+# mapped_bcs <- unique(ct_obj$bc); length(mapped_bcs)
+# length(mapped_bcs) / ncol(cur_seurat)
+#
+# keep <- ifelse(ct_train$type == 'st', TRUE, !(ct_train$bc %in% mapped_bcs))
+# table(keep)
+#
+#
+# # mapping round 2:
+#
+# tic()
+# ct_obj2 <- CellTrek::celltrek(
+#   st_sc_int=ct_train[,keep],
+#   int_assay='traint',
+#   # sc_data=cur_seurat,
+#   #sc_data = seurat_obj,
+#   sc_assay = 'RNA',
+#   reduction='pca',
+#   intp=T, intp_pnt=10000,
+#   intp_lin=F, nPCs=30,
+#   ntree=1000,
+#   dist_thresh=0.75,
+#   top_spot=1, spot_n=5,
+#   repel_r=20,
+#   repel_iter=20,
+#   keep_model=T,
+#   verbose=TRUE
+# )$celltrek
+# time_elapsed <- toc()
+#
+# dim(ct_obj)
+# dim(ct_obj2)
+#
+#
+#
+# mapped_bcs <- c(mapped_bcs, unique(ct_obj2$bc))
+#
+#
+# keep <- ifelse(ct_train$type == 'st', TRUE, !(ct_train$bc %in% mapped_bcs))
+# table(keep)
+#
+#
+# # mapping round 2:
+#
+# tic()
+# ct_obj3 <- CellTrek::celltrek(
+#   st_sc_int=ct_train[,keep],
+#   int_assay='traint',
+#   # sc_data=cur_seurat,
+#   #sc_data = seurat_obj,
+#   sc_assay = 'RNA',
+#   reduction='pca',
+#   intp=T, intp_pnt=10000,
+#   intp_lin=F, nPCs=30,
+#   ntree=1000,
+#   dist_thresh=0.75,
+#   top_spot=1, spot_n=5,
+#   repel_r=20,
+#   repel_iter=20,
+#   keep_model=T,
+#   verbose=TRUE
+# )$celltrek
+# time_elapsed <- toc()
+#
+# dim(ct_obj)
+# dim(ct_obj2)
+# dim(ct_obj3)
+#
+#
+#
+# (ncol(ct_obj) + ncol(ct_obj2) + ncol(ct_obj3)) / ncol(cur_seurat)
+#
+# subset(ct_obj@meta.data, type == 'sc') %>% .$bc
+#
+#
+#
+# sc_data <- cur_seurat
+# sc_assay <- 'RNA'
+#
+#
+#
+#
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+sum(cur_seurat$bc %in% ct_obj$bc) / ncol(cur_seurat)
+
+p1 <- cur_vis@meta.data %>%
+  ggplot(aes(x=col, y=row, color=annotation)) +
+  geom_point(size=1) +
+  scale_color_manual(values=rev(magma(9))) +
+  ggtitle('Visium') +
+  umap_theme() +
+  theme(plot.title=element_text(hjust=0.5))
+
+p2 <- DimPlot(
+    ct_obj,
+    group.by = 'subtype',
+    reduction = 'celltrek') +
+  ggtitle('Celltrek') +
+  umap_theme() +
+  theme(plot.title=element_text(hjust=0.5))
+
+pdf(paste0(fig_dir, 'test_cell_charting_sample.pdf'), width=8, height=3)
+p1 + p2
+dev.off()
+
+
+
+p <- DimPlot(
+    ct_obj,
+    group.by = 'cell_names',
+    split.by = 'cell_names',
+    reduction = 'celltrek',
+    ncol=7
+  ) +
+  umap_theme() +
+  theme(plot.title=element_text(hjust=0.5))
+
+pdf(paste0(fig_dir, 'test_celltrek_sample_split.pdf'), width=12, height=8)
+p
+dev.off()
+
+
+p <- DimPlot(
+    ct_obj,
+    group.by = 'subtype',
+    split.by = 'subtype',
+    reduction = 'celltrek',
+    ncol=8
+  ) +
+  umap_theme() +
+  theme(plot.title=element_text(hjust=0.5)) +
+  NoLegend()
+
+pdf(paste0(fig_dir, 'test_celltrek_subtype_split.pdf'), width=12, height=4)
+p
+dev.off()
+
+
+```
+
+celltrek with full single-cell dataset:
+
+```{r eval=FALSE}
+
+# select current visium sample
+cur_vis <- subset(seurat_vis, Sample == "Dec_20_2021_Human7")
+cur_image <- names(cur_vis@images)[sapply(names(cur_vis@images), function(x){nrow(cur_vis@images[[x]]@coordinates) > 0})]
+cur_vis@images <- list(cur_image = cur_vis@images[[cur_image]])
+
+###############################################################################
+# Co-embed the single-cell and spatial transcriptomic data
+###############################################################################
+
+# needed something in orig.ident for some reason?
+seurat_obj$orig.ident <- 'RNA'
+Idents(seurat_obj) <- seurat_obj$cell_identity
+Idents(cur_vis) <- cur_vis$annotation
+
+# co-embedding
+ct_train <- CellTrek::traint(
+  st_data=cur_vis,
+  sc_data=seurat_obj,
+  sc_assay='RNA',
+  cell_names='cell_identity',
+  gene_kept = VariableFeatures(seurat_obj)
+)
+saveRDS(ct_train, file=paste0(data_dir, 'test_celltrek_full_snRNA.rds'))
+
+# plot the integrated UMAP
+p2 <- PlotEmbedding(
+  ct_train,
+  group.by = 'annotation',
+  split.by = 'type',
+  raster_dpi=200,
+  plot_under=TRUE,
+  plot_theme = umap_theme() + NoLegend()
+)[[2]]
+
+p1 <- PlotEmbedding(
+  ct_train,
+  group.by = 'cell_identity',
+  split.by = 'type',
+  raster_dpi=200,
+  plot_under=TRUE,
+  plot_theme = umap_theme() + NoLegend()
+)[[1]]
+
+pdf(paste0(fig_dir, 'test_coembedding_full2.pdf'), width=10, height=5)
+wrap_plots(list(p1,p2), ncol=2) + plot_layout(guides='collect')
+dev.off()
+
+###############################################################################
+# Map single-cell data to spatial coordinates
+###############################################################################
+
+# re-load ct train object
+ct_train <- readRDS(file=paste0(data_dir, 'test_celltrek_full_snRNA.rds'))
+
+
+# trying to figure out how many cells I can map at one time
+#
+# n_samples:
+# 15: works
+# 25: too big
+# 20: seems fine
+
+# maybe should just do 13 samples each time so it's exactly 3 bins?
+
+n_samples <- 1
+
+# subset ct_train with only a handful of the
+all_samples <- unique(seurat_obj$Sample)
+samples <- all_samples[1:n_samples]
+ct_subset <- subset(ct_train, type == 'st' | Sample %in% samples)
+
+dim(ct_subset)
+
+ct_out <- CellTrek::celltrek(
+  st_sc_int=ct_subset,
+  int_assay='traint',
+  # sc_data=cur_seurat,
+  sc_assay = 'RNA',
+  reduction='pca',
+  intp=T, intp_pnt=10000,
+  intp_lin=F, nPCs=30,
+  ntree=1000,
+  dist_thresh=0.55,
+  top_spot=1, spot_n=100,
+  repel_r=20, repel_iter=20,
+  keep_model=T
+)
+ct_obj <- ct_out$celltrek
+
+dim(ct_subset)
+dim(ct_obj)
+
+table(ct_subset$type)
+
+saveRDS(ct_obj, file=paste0(data_dir, 'test_celltrek_obj_full.rds'))
+
+
+p1 <- cur_vis@meta.data %>%
+  ggplot(aes(x=col, y=row, color=annotation)) +
+  geom_point(size=1) +
+  scale_color_manual(values=rev(magma(9))) +
+  ggtitle('Visium') +
+  umap_theme() +
+  theme(plot.title=element_text(hjust=0.5))
+
+p2 <- DimPlot(
+    ct_obj,
+    group.by = 'cell_identity',
+    reduction = 'celltrek') +
+  ggtitle('Celltrek') +
+  umap_theme() +
+  theme(plot.title=element_text(hjust=0.5))
+
+pdf(paste0(fig_dir, 'test_cell_charting2.pdf'), width=8, height=3)
+p1 + p2
+dev.off()
+
+
+
+p <- DimPlot(
+    ct_obj,
+    group.by = 'cell_names',
+    split.by = 'cell_names',
+    reduction = 'celltrek',
+    ncol=7
+  ) +
+  umap_theme() +
+  theme(plot.title=element_text(hjust=0.5))
+
+pdf(paste0(fig_dir, 'test_celltrek_split2.pdf'), width=12, height=8)
+p
+dev.off()
+
+
+p <- DimPlot(
+    ct_obj,
+    group.by = 'cell_identity',
+    split.by = 'cell_identity',
+    reduction = 'celltrek',
+    ncol=8
+  ) +
+  umap_theme() +
+  theme(plot.title=element_text(hjust=0.5)) +
+  NoLegend()
+
+pdf(paste0(fig_dir, 'test_celltrek_subtype_split2.pdf'), width=12, height=4)
+p
+dev.off()
+
+```
+
+why did some of my jobs not work?
+
+```{r eval=FALSE}
+
+celltrek_dir <- '~/swaruplab/smorabit/analysis/ADDS_2021/splitseq/integration/spatial_mapping/data/coords/'
+
+vis_samples <- do.call(rbind, strsplit(dir(celltrek_dir), '-'))[,1]
+vis_samples <- as.character(sapply(vis_samples, function(x){substr(x, 5, 100)}))
+
+sc_samples <- as.character(sapply(dir(celltrek_dir), function(x){
+  substr(x, 1, nchar(x) - 18)
+}))
+sc_samples <- do.call(rbind, strsplit(sc_samples, '-'))
+sc_samples[,3] <- ifelse(sc_samples[,1] == sc_samples[,3], '', sc_samples[,3])
+sc_samples <- sc_samples[,2:3]
+sc_samples[,1] <- as.character(sapply(sc_samples[,1], function(x){substr(x,4, 100)}))
+
+sc_samples <- apply(sc_samples, 1, function(x){
+  if(x[2] != ""){
+    out <- paste(c(x[1], x[2]), collapse='-')
+  } else{
+    out <- x[1]
+  }
+  out
+})
+
+vis_samples %in% seurat_vis$Sample %>% sum
+sc_samples %in% seurat_obj$Sample %>% sum
+
+sc_samples[!(sc_samples %in% seurat_obj$Sample)]
+unique(seurat_obj$Sample)
+
+
+
+# which combinations are missing?
+
+combinations <- c()
+all_vis_samples <- as.character(unique(seurat_vis$Sample))
+all_sc_samples <- as.character(unique(seurat_obj$Sample))
+for(i in all_vis_samples){
+  for(j in all_sc_samples){
+    combo <- paste(c(i, j), collapse='#')
+    combinations <- c(combinations, combo)
+  }
+}
+head(combinations)
+
+run_combinations <- as.character(sapply(1:length(vis_samples), function(i){
+  paste(c(vis_samples[i], sc_samples[i]), collapse='#')
+}))
+
+run_combinations %in% combinations %>% sum
+
+# these are the combinations that failed:
+failed_combos <- combinations[!(combinations %in% run_combinations)]
+
+sapply(all_vis_samples, function(x){any(grepl(x, failed_combos))})
+all_sc_samples[!sapply(all_sc_samples, function(x){any(grepl(x, failed_combos))})]
+
+```
+
+Get the indices of the failed combos
+
+```{r eval=FALSE}
+
+outnames <- c()
+
+# list of vis & sc samples
+vis_samples <- unique(as.character(seurat_vis@meta.data[[vis_sample_col]]))
+sc_samples <- unique(as.character(seurat_obj@meta.data[[sc_sample_col]]))
+
+for(index in 1:1872){
+
+  # get index of the visium & sc samples
+  vis_sample_ind <- ceiling(index / length(sc_samples))
+  sc_sample_ind <- 1 + (index %% length(sc_samples))
+
+  # get the name of the visium & sc samples
+  cur_vis_sample <- vis_samples[vis_sample_ind]
+  cur_sc_sample <- sc_samples[sc_sample_ind]
+
+  # output name is the concatenation of the sample names:
+  outname <- paste0('vis_', cur_vis_sample, '-sc_', cur_sc_sample)
+
+  if(outname %in% outnames){
+    print(vis_sample_ind)
+    print(sc_sample_ind)
+    print(index)
+  }
+
+  outnames <- c(outnames, outname)
+
+}
+outnames
+max(table(outnames))
+
+which(table(outnames) == 2)
+outnames[outnames == "vis_Oct_2021_1-sc_ADDS_10"]
+
+```
+
+
+Run celltrek on one sample and make sure to flip the rows first!!!!!
+
+
+
+
+```{r eval=FALSE}
+
+# variables from argparse:
+cell_id_col <- 'cell_identity'
+n_iterations <- 3 # how many times to try mapping with celltrek
+i <- 1
+
+# set up variables for visium:
+vis_sample_col <- 'Sample'
+sc_sample_col <- 'Sample'
+vis_samples <- unique(as.character(seurat_vis@meta.data[[vis_sample_col]]))
+sc_samples <- unique(as.character(seurat_obj@meta.data[[sc_sample_col]]))
+
+
+# get the name of the visium & sc samples
+cur_vis_sample <- "Dec_13_2021_Human1"
+cur_sc_sample <- "ADDS_118"
+
+# output name is the concatenation of the sample names:
+outname <- paste0('vis_', cur_vis_sample, '-sc_', cur_sc_sample)
+
+# get the current visium sample and make sure to set up the image
+# cur_vis <- seurat_vis[,seurat_vis@meta.data[[vis_sample_col]] == cur_vis_sample]
+# cur_image <- names(cur_vis@images)[sapply(names(cur_vis@images), function(x){nrow(cur_vis@images[[x]]@coordinates) > 0})]
+# cur_vis@images <- list(cur_image = cur_vis@images[[cur_image]])
+
+
+
+# subset the seurat object for this visium sample
+cur_vis <- seurat_vis[,seurat_vis@meta.data[[vis_sample_col]] == cur_vis_sample]
+cur_image <- names(cur_vis@images)[sapply(names(cur_vis@images), function(x){nrow(cur_vis@images[[x]]@coordinates) > 0})]
+cur_vis@images <- list(cur_image = cur_vis@images[[cur_image]])
+
+# add coords to seurat metadata
+
+# need to fix the image row:
+cur_row <- cur_vis@images$cur_image@coordinates$row
+row_min <- min(cur_row);
+cur_row <- cur_row - row_min
+row_max <- max(cur_row)
+cur_row <- cur_row - row_max
+cur_row <- cur_row * -1
+cur_row <- cur_row + row_min
+
+cur_vis$row <- cur_row
+cur_vis@images$cur_image@coordinates$row <- cur_row
+cur_vis$col <- cur_vis@images$cur_image@coordinates$col
+cur_vis$imagerow <- cur_vis@images$cur_image@coordinates$imagerow
+cur_vis$imagecol <- cur_vis@images$cur_image@coordinates$imagecol
+
+
+
+# get the current sc seurat object
+cur_seurat <- seurat_obj[,seurat_obj@meta.data[[sc_sample_col]] == cur_sc_sample]
+cur_seurat$orig.ident <- cur_seurat@meta.data[[sc_sample_col]]
+
+# add barcode column to vis & sc:
+cur_vis$bc <- colnames(cur_vis)
+cur_seurat$bc <- colnames(cur_seurat)
+
+
+# co-embedding
+ct_train <- CellTrek::traint(
+  st_data=cur_vis,
+  sc_data=cur_seurat,
+  sc_assay='RNA',
+  cell_names=cell_id_col
+)
+
+
+library(tictoc)
+
+obj_list <- list()
+mapped_bcs <- c(); keep <- colnames(ct_train)
+for(i in 1:n_iterations){
+  print(i)
+  tic()
+  ct_obj <- CellTrek::celltrek(
+    st_sc_int=ct_train[,keep],
+    int_assay='traint',
+    sc_assay = 'RNA',
+    reduction='pca',
+    intp=T, intp_pnt=10000,
+    intp_lin=F, nPCs=30,
+    ntree=1000,
+    dist_thresh=0.75,
+    top_spot=1, spot_n=5,
+    repel_r=20,
+    repel_iter=20,
+    keep_model=T,
+    verbose=TRUE
+  )$celltrek
+  time_elapsed <- toc()
+
+  # which cells were not mapped??
+  mapped_bcs <- c(mapped_bcs, unique(ct_obj$bc))
+  print(length(mapped_bcs) / ncol(cur_seurat))
+
+  keep <- ifelse(ct_train$type == 'st', TRUE, !(as.character(ct_train$bc) %in% mapped_bcs))
+  #table(keep)
+
+  obj_list[[i]] <- ct_obj
+
+}
+
+ct_coords <- do.call(rbind, lapply(obj_list, function(x){
+  x@reductions$celltrek@cell.embeddings
+}))
+
+ix <- match(rownames(ct_coords), colnames(ct_train))
+ct_meta <- ct_train@meta.data[ix,colnames(cur_seurat@meta.data)]
+ct_meta <- cbind(ct_meta, ct_coords)
+
+# only take the barcode and the coordinates to save:
+ct_meta <- dplyr::select(ct_meta, c(bc, celltrek_1, celltrek_2))
+
+write.csv(ct_meta, quote=FALSE, file=paste0(outname, '_mapped_coords.csv'))
+
+write.table(ct_meta, quote=FALSE, file=paste0(outname, '_mapped_coords.tsv'), sep='\t')
+
+test <- read.csv(file=paste0(outname, '_mapped_coords.csv'))
+test <- read.table(paste0(outname, '_mapped_coords.tsv'), sep='\t')
+
+```
+
+Load one of the results:
+
+```{r eval=FALSE}
+
+library(magrittr)
+
+
+# get a list of the celltrek output files
+celltrek_dir <- '~/swaruplab/smorabit/analysis/ADDS_2021/splitseq/integration/spatial_mapping/data/coords/'
+coords_files <- dir(celltrek_dir)
+
+# get a list of the visium / sc samples
+vis_sample_col <- 'Sample'
+sc_sample_col <- 'Sample'
+
+vis_samples <- do.call(rbind, strsplit(dir(celltrek_dir), '-'))[,1]
+vis_samples <- as.character(sapply(vis_samples, function(x){substr(x, 5, 100)}))
+
+# extract the visium / sc samples from the list of output files
+sc_samples <- as.character(sapply(dir(celltrek_dir), function(x){
+  substr(x, 1, nchar(x) - 18)
+}))
+sc_samples <- do.call(rbind, strsplit(sc_samples, '-'))
+sc_samples[,3] <- ifelse(sc_samples[,1] == sc_samples[,3], '', sc_samples[,3])
+sc_samples <- sc_samples[,2:3]
+sc_samples[,1] <- as.character(sapply(sc_samples[,1], function(x){substr(x,4, 100)}))
+sc_samples <- apply(sc_samples, 1, function(x){
+  if(x[2] != ""){
+    out <- paste(c(x[1], x[2]), collapse='-')
+  } else{
+    out <- x[1]
+  }
+  out
+})
+
+
+# make list of seurat objects for each sample:
+seurat_list <- lapply(unique(seurat_obj@meta.data[[sc_sample_col]]), function(x){
+  seurat_obj[,seurat_obj@meta.data[[sc_sample_col]] == x]
+})
+names(seurat_list) <- unique(seurat_obj@meta.data[[sc_sample_col]])
+
+# make list of seurat visium objects for each sample
+vis_list <- lapply(unique(seurat_vis@meta.data[[vis_sample_col]]), function(y){
+  cur_vis <- seurat_vis[,seurat_vis@meta.data[[vis_sample_col]] == y]
+  cur_image <- names(cur_vis@images)[sapply(names(cur_vis@images), function(x){nrow(cur_vis@images[[x]]@coordinates) > 0})]
+  cur_vis@images <- list(cur_image = cur_vis@images[[cur_image]])
+  cur_vis
+})
+names(vis_list) <- unique(seurat_vis@meta.data[[vis_sample_col]])
+
+# number of closest spots:
+n_closest <- 10
+
+# initialize progress bar
+pb <- utils::txtProgressBar(min = 0, max = length(coords_files),style = 3, width = 50, char = "=")
+
+anno_list <- list()
+for(i in 1:length(coords_files)){
+#for(i in 1:50){
+  print(i)
+  setTxtProgressBar(pb, i)
+
+  # load the celltrek coordinates
+  cur_file <- coords_files[i]
+  cur_coords <- read.csv(paste0(celltrek_dir, cur_file))
+
+  # remove any cells that were multi-mapped
+  cur_coords <- cur_coords[match(unique(cur_coords$bc), cur_coords$bc),]
+
+  # get current sample
+  cur_sc_sample <- sc_samples[i]
+  cur_vis_sample <- vis_samples[i]
+
+  # add sample info to coords
+  cur_coords$vis_sample <- cur_vis_sample
+  cur_coords$sc_sample <- cur_sc_sample
+
+  # flip celltrek2
+  cur_row <- cur_coords$celltrek_2
+  row_min <- min(cur_row);
+  cur_row <- cur_row - row_min
+  row_max <- max(cur_row)
+  cur_row <- cur_row - row_max
+  cur_row <- cur_row * -1
+  cur_row <- cur_row + row_min
+  cur_coords$celltrek_2 <- cur_row
+
+  # subset the seurat object for this visium sample
+  cur_vis <- vis_list[[cur_vis_sample]]
+  # cur_vis <- seurat_vis[,seurat_vis@meta.data[[vis_sample_col]] == cur_vis_sample]
+  # cur_image <- names(cur_vis@images)[sapply(names(cur_vis@images), function(x){nrow(cur_vis@images[[x]]@coordinates) > 0})]
+  # cur_vis@images <- list(cur_image = cur_vis@images[[cur_image]])
+
+  # subset the seurat object for this sc sample
+  # cur_seurat <- seurat_obj[,seurat_obj@meta.data[[sc_sample_col]] == cur_sc_sample]
+  cur_seurat <- seurat_list[[cur_sc_sample]]
+
+  # setup the celltrek coords dataframe to compute the distance
+  sc_coords <- cur_coords %>% dplyr::select(c(celltrek_1, celltrek_2)) %>%
+    dplyr::rename(c(x=celltrek_1, y=celltrek_2)) %>%
+    as.matrix() %>% t()
+  colnames(sc_coords) <- as.character(cur_coords$bc)
+
+  # setup the visium coords dataframe to compute the distance
+  spots <- cur_vis@meta.data[,c('imagecol', 'imagerow')] %>% dplyr::rename(c(x=imagecol, y=imagerow))
+  spots <- spots %>% as.matrix() %>% t()
+
+  # compute distance between the projected single-cells and the spots
+  dists <- apply(sc_coords, 2, function(z){
+      sqrt(colSums((spots - z)^2))
+  })
+
+  # flatten into a dataframe
+  dist_df <- reshape2::melt(dists)
+  dist_df %<>% dplyr::rename(c(vis_bc=Var1, sc_bc=Var2, dist=value))
+
+  # get the n closest spots to each mapped cell based on distance
+  top_closest <- dist_df %>% group_by(sc_bc) %>% top_n(-n_closest, wt=dist)
+
+  # add the spatial annotation of the closest spots
+  ix <- match(top_closest$vis_bc, colnames(cur_vis))
+  top_closest$annotation <- cur_vis$annotation[ix]
+
+  # what's the most frequent annotation for each cell?
+  anno_freq <- top_closest %>% group_by(sc_bc, annotation) %>%
+    summarize(Freq=n())
+  anno_freq <- anno_freq %>% group_by(sc_bc) %>% top_n(1, wt=Freq) %>%
+    mutate(annotation = paste0(annotation, collapse=' ')) %>%
+    distinct()
+
+  # add the cluster identity from the singlecell data
+  ix <- match(anno_freq$sc_bc, colnames(cur_seurat))
+  anno_freq$cell_identity <- cur_seurat$cell_identity[ix]
+  anno_freq$cell_type <- cur_seurat$cell_type[ix]
+
+  # add visium sample and sc sample:
+  anno_freq$vis_sample <- cur_vis_sample
+  anno_freq$sc_sample <- cur_sc_sample
+
+  # add the celltrek coords in
+  anno_freq$celltrek_1 <- cur_coords$celltrek_1
+  anno_freq$celltrek_2 <- cur_coords$celltrek_2
+
+  anno_list[[i]] <- anno_freq
+
+}
+
+close(pb)
+
+# combine into one dataframe
+anno_df <- do.call(rbind, anno_list)
+
+write.csv(anno_df, quote=FALSE, file='celltrek_coords_combined.csv')
+
+
+# re-load the output:
+
+
+```
+
+Plot the cell mapping for each visium sample
+
+```{r eval=FALSE}
+
+anno_df <- read.csv('celltrek_coords_combined.csv')
+color_df <- read.csv('/dfs7/swaruplab/smorabit/analysis/ADDS_2021/splitseq/integration/data/cell_identity.csv')
+cp  <- color_df$colour
+names(cp) <- color_df$group
+
+# ix <- match(anno_df$sc_bc, seurat_obj$bc)
+# anno_df$cell_identity <- seurat_obj$cell_identity[ix]
+# anno_df$cell_type <- seurat_obj$cell_type[ix]
+#
+
+# make a plot for each vis sample
+vis_sample_col <- 'Sample'
+visium_samples <- unique(seurat_vis@meta.data[[vis_sample_col]])
+cur_vis_sample <- visium_samples[1]
+
+#visium_samples <- c("Dec_13_2021_Human5", "Dec_13_2021_Human8")
+
+for(cur_vis_sample in visium_samples){
+
+  print(cur_vis_sample)
+
+  plot_df <- subset(anno_df, vis_sample == cur_vis_sample)
+
+  p_vis <- VisDimPlot(
+    seurat_vis[,seurat_vis@meta.data[[vis_sample_col]] == cur_vis_sample],
+    group.by = 'annotation',
+    dpi=600,
+    ncol = 1,
+    color_df=human_cp,
+    text_size=15
+  )
+  #
+  # # plot colored by region
+  # p <- plot_df %>%
+  #   ggplot(aes(x=celltrek_1, y=celltrek_2, color=annotation)) +
+  #   ggrastr::rasterise(geom_point(size=0.5), dpi=150, scale=0.5) +
+  #   umap_theme() + coord_fixed()
+  #
+  # ct_plots <- p + facet_wrap(~sc_sample, ncol=12) + theme(strip.text.x = element_text(size = 5))
+  #
+  # pdf(paste0(fig_dir,'celltrek_mapped/', cur_vis_sample, '_anno.pdf'), width=18, height=6)
+  # print(p_vis + ct_plots + plot_layout(widths=c(3, 9)))
+  # dev.off()
+
+  # plot colored by cell identity
+  p <- plot_df %>%
+    ggplot(aes(x=celltrek_1, y=celltrek_2, color=cell_identity)) +
+    ggrastr::rasterise(geom_point(size=0.5), dpi=500, scale=0.5) +
+    scale_color_manual(values=cp) +
+    umap_theme() + coord_fixed() +
+    guides(colour = guide_legend(override.aes = list(size=5)))
+
+  ct_plots <- p + facet_wrap(~sc_sample, ncol=12) + theme(strip.text.x = element_text(size = 5))
+
+  pdf(paste0(fig_dir,'celltrek_mapped/', cur_vis_sample, '_cell_ids.pdf'), width=18, height=6)
+  print(p_vis + ct_plots + plot_layout(widths=c(3, 9)))
+  dev.off()
+
+  # plot colored by cell type
+  # p <- plot_df %>%
+  #   ggplot(aes(x=celltrek_1, y=celltrek_2, color=cell_type)) +
+  #   ggrastr::rasterise(geom_point(size=0.5), dpi=150, scale=0.5) +
+  #   umap_theme() + coord_fixed()
+  #
+  # ct_plots <- p + facet_wrap(~sc_sample, ncol=12) + theme(strip.text.x = element_text(size = 5))
+  #
+  # pdf(paste0(fig_dir,'celltrek_mapped/', cur_vis_sample, '_celltype.pdf'), width=18, height=6)
+  # print(p_vis + ct_plots + plot_layout(widths=c(3, 9)))
+  # dev.off()
+
+}
+
+
+
+annotation_names <- c('WM', as.character(unique(seurat_vis$annotation)))
+table(anno_df$annotation)
+
+
+
+
+# re-name white matter:
+anno_df$anno_fix <- ifelse(
+  grepl('WM', anno_df$annotation) & !(grepl('L', anno_df$annotation)),
+  'WM',
+  anno_df$annotation
+)
+
+
+sum(anno_df$annotation %in% annotation_names) / nrow(anno_df)
+sum(anno_df$anno_fix %in% annotation_names) / nrow(anno_df)
+
+
+length(table(anno_df$anno_fix))
+length(table(anno_df$anno_fix)[table(anno_df$anno_fix) >= 500])
+table(anno_df$anno_fix)[table(anno_df$anno_fix) >= 500]
+
+sum(table(anno_df$anno_fix)[table(anno_df$anno_fix) > 500]) / nrow(anno_df)
+sum(table(anno_df$anno_fix)[table(anno_df$anno_fix) <= 500]) / nrow(anno_df)
+
+sum(colnames(seurat_obj) %in% anno_df$sc_bc)
+
+```
+
+Which region was each cell most frequently mapped to across all of the samples?
+
+
+
+Seems odd that for some clusters like Microglia are 99% in white matter? I think
+for MG it would broadly split into WM vs GM for microglia
+
+```{r eval=FALSE}
+
+# anno_df_full <- anno_df
+
+
+anno_df <- subset(anno_df_full, anno_fix %in% annotation_names)
+anno_df$sc_bc <- as.character(anno_df$sc_bc)
+anno_df$anno_fix <- factor(
+  as.character(anno_df$anno_fix),
+  levels = c('L1', 'L2/3', 'L3/4', 'L3/4/5', 'L5/6', 'L6b', 'WM')
+)
+
+# count how many times each cell was mapped to each annotation
+test <- anno_df %>% dplyr::group_by(sc_bc, anno_fix, .drop=FALSE) %>%
+    dplyr::summarize(Freq=n())
+
+bc_counts <- table(anno_df$sc_bc)
+ix <- match(test$sc_bc, names(bc_counts))
+test$Freq / as.numeric(bc_counts[ix])
+test$prop <- test$Freq / as.numeric(bc_counts[ix])
+
+
+props <- data.frame(bc = colnames(seurat_plot))
+for(cur_group in as.character(unique(test$anno_fix))){
+
+  test_prop <- subset(test, anno_fix == cur_group)
+  ix <- match(colnames(seurat_plot), as.character(test_prop$sc_bc))
+  cur_prop <- data.frame(
+    cur_group = test_prop$prop[ix]
+  )
+  names(cur_prop) <- cur_group
+  props <- cbind(props, cur_prop)
+
+#  p <- VlnPlot(seurat_plot, features='prop', group.by='cell_identity', pt.size=0) + NoLegend()
+
+
+}
+
+seurat_plot@meta.data <- cbind(seurat_plot@meta.data, props[,-1])
+
+
+p <- custom_vln(
+    seurat_plot,
+    features = names(props[,-1]),
+    group.by = 'cell_identity',
+    #groups = c('INH1 VIP+', 'INH4 LAMP5+', 'INH2 SST+',  'INH5 SST+',  'INH3 PVALB+', 'INH6 PVALB+'),
+    add_boxplot=FALSE
+  #  split.by = 'Diagnosis',
+  #  selected_split = c('ASD', 'Control'),
+  #  split_colors=c('darkorchid', 'grey'),
+  #  add_colorbar=FALSE,
+    #plot_ymin = NA
+  )
+
+
+
+
+pdf(paste0(fig_dir, 'test_prop_vln_big.pdf'), width=10, height=7)
+p + NoLegend()
+dev.off()
+
+pdf(paste0(fig_dir, 'test_prop_vln.pdf'), width=10, height=4)
+p
+dev.off()
+
+
+
+
+
+mg_bcs <- colnames(seurat_plot[, seurat_plot$cell_type == 'MG'])
+test_mg <- test %>% subset(sc_bc %in% mg_bcs)
+
+test_mg %>% subset(anno_fix == 'WM' & Freq > 20) %>% dim
+
+
+test <- test %>% group_by(sc_bc) %>% top_n(1, wt=Freq) %>%
+  mutate(anno_fix = paste0(anno_fix, collapse=' ')) %>%
+  distinct()
+
+
+sum(test$anno_fix %in% annotation_names) / nrow(test)
+
+table(test$anno_fix)
+
+
+test2 <- subset(test, anno_fix %in% annotation_names)
+
+
+
+seurat_plot <- seurat_obj[,test2$sc_bc]
+ix <- match(as.character(colnames(seurat_plot)), test2$sc_bc)
+seurat_plot$spatial_anno <- as.character(test2$anno_fix)[ix]
+
+
+
+p <- PlotEmbedding(
+  seurat_plot,
+  group.by = 'spatial_anno',
+  raster_dpi = 600,
+  raster_scale=0.5, point_size=1,
+  plot_theme = umap_theme()
+)
+
+
+p1 <- DimPlot(seurat_plot, group.by = 'spatial_anno', raster=F, label=TRUE) + umap_theme()
+p2 <- DimPlot(seurat_plot, group.by = 'cell_identity', raster=F, label=TRUE) + umap_theme()
+
+pdf(paste0(fig_dir, 'umap_spatial_anno.pdf'), width=6, height=6)
+p
+dev.off()
+
+
+pdf(paste0(fig_dir, 'umap_spatial_anno.pdf'), width=12, height=4)
+p1 + p2
+dev.off()
+
+test3 <- subset(seurat_plot@meta.data, cell_type == 'MG')
+table(test3$spatial_anno) / nrow(test3) * 100
+
+```

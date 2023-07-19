@@ -1,0 +1,40 @@
+#!/bin/bash
+#SBATCH --job-name=DEG_plot
+#SBATCH -p standard
+#SBATCH -A mblurton_lab
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=4
+#SBATCH --error=slurm-%J.err
+#SBATCH --mem 128G
+#SBATCH --time=4:00:00
+
+source ~/.bashrc
+conda activate cicero
+
+name="DSAD_vs_Control_clusters"
+infile="/dfs3b/swaruplab/smorabit/analysis/ADDS_2021/splitseq/DEGs/data/DSAD_vs_Control_clusters.csv"
+outdir="/dfs3b/swaruplab/smorabit/analysis/ADDS_2021/splitseq/DEGs/figures/"$name
+mkdir $outdir
+
+# setup other variables for plotting script
+seurat="/dfs3b/swaruplab/smorabit/analysis/ADDS_2021/splitseq/data/ADDS_integrated_scvi.rds"
+cluster="annotation"
+nlabel_volcano=10
+volcano_color1="darkgoldenrod3"
+volcano_color2="hotpink3"
+ngenes_enrichr=100
+nterms=20
+
+# launch R script:
+Rscript --vanilla /dfs3b/swaruplab/smorabit/analysis/ADDS_2021/bin/parallel_DEG_plotting.R \
+  --infile $infile \
+  --outdir $outdir \
+  --name $name \
+  --seurat $seurat \
+  --cluster $cluster \
+  --nlabel-volcano $nlabel_volcano \
+  --volcano-color1 $volcano_color1 \
+  --volcano-color2 $volcano_color2 \
+  --ngenes-enrichr $ngenes_enrichr \
+  --nterms-enrichr $nterms

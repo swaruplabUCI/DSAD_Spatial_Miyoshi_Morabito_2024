@@ -1,0 +1,39 @@
+#!/bin/bash
+#SBATCH --job-name=FindMarkers
+#SBATCH -p standard
+#SBATCH -A vswarup_lab
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=32
+#SBATCH --error=slurm-%J.err
+#SBATCH --mem 64G
+#SBATCH --array=1-6
+#SBATCH --time=4:00:00
+
+source ~/.bashrc
+conda activate cicero
+
+# seurat object path:
+seurat="/dfs3b/swaruplab/smorabit/analysis/ADDS_2021/visium/human/data/ADDS_seurat_processed.rds"
+outdir="~/swaruplab/smorabit/analysis/ADDS_2021/visium/human/DEGs/cluster_markers_6/"
+type="markers"
+name="cluster_markers"
+cluster="bs.q6"
+latent="Sample,nCount_Spatial"
+
+# launch R script:
+Rscript --vanilla /dfs3b/swaruplab/smorabit/analysis/ADDS_2021/bin/parallel_DEGs.R \
+    --seurat $seurat \
+    --outdir $outdir \
+    --type $type \
+    --cluster $cluster \
+    --name $name \
+    --index $SLURM_ARRAY_TASK_ID \
+    --test "MAST" \
+    --pos "TRUE" \
+    --pct 0.2 \
+    --logfc 0.25 \
+    --verbose "TRUE" \
+    --latent $latent \
+    --cores 32 \
+    --assay "Spatial"

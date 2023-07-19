@@ -1,0 +1,201 @@
+```{r eval=FALSE}
+
+# conda activate cicero
+library(Seurat)
+library(tidyverse)
+library(cowplot)
+library(patchwork)
+library(RColorBrewer)
+library(EnsDb.Hsapiens.v86)
+library(GenomicRanges)
+library(ensembldb)
+library(hdWGCNA)
+
+colfunc <- colorRampPalette(rev(brewer.pal(11, 'Spectral' )))
+theme_set(theme_cowplot())
+
+setwd("/dfs7/swaruplab/smorabit/analysis/ADDS_2021/visium/human/")
+
+fig_dir <- "figures/"
+data_dir <- "data/"
+
+source('/dfs7/swaruplab/smorabit/analysis/scWGCNA/bin/spatial_functions.R')
+
+# re-load seurat obj & BayesSpace object:
+# seurat_human <- readRDS(paste0(data_dir,'ADDS_seurat_processed.rds'))
+
+seurat_human <- readRDS("/dfs7/swaruplab/emiyoshi/Visium_ADDS/ADDS_seurat_processed_annotated.rds")
+
+seurat_human$Diagnosis <- factor(
+  as.character(seurat_human$Diagnosis),
+  levels = c("Control", "earlyAD", "AD", "AD_DS")
+)
+
+human_cp <- c(
+      "L1" = "#8B3D5A", "L2-3" = "#E7BDE1", "L3-4" = "#E6A4CD",
+      "L3-4-5" = "#CF8BA3", "L5-6" = "#9E6D7F", "L6b" = "#CDAEB9", "WM1" = "#64BCDB", "WM2" = "#62A7D7", "WM3" = "#99C8D7")
+
+# set factor levels for human clusters:
+seurat_human$annotation <- factor(
+  as.character(seurat_human$annotation),
+  levels = names(human_cp)
+)
+
+```
+
+```{r eval=FALSE}
+
+seurat_human$tissue_type <- ifelse(
+  grepl('WM', as.character(seurat_human$annotation)),
+  'WM', 'GM'
+)
+
+# grey matter marker genes:
+seurat_test <- subset(seurat_human, tissue_type == 'GM')
+Idents(seurat_test) <- as.character(seurat_test$annotation)
+gm_markers <- FindAllMarkers(
+  seurat_test,
+  test.use = 'MAST',
+#  latent.vars = "Sample,nCount_Spatial",
+  only.pos = TRUE,
+  min.pct = 0.2,
+  logfc.threshold = 0.25
+)
+
+# white matter marker genes:
+seurat_test <- subset(seurat_human, tissue_type == 'WM')
+Idents(seurat_test) <- as.character(seurat_test$annotation)
+wm_markers <- FindAllMarkers(
+  seurat_test,
+  test.use = 'MAST',
+#  latent.vars = "Sample,nCount_Spatial",
+  only.pos = TRUE,
+  min.pct = 0.2,
+  logfc.threshold = 0.25
+)
+
+# add tissue type
+gm_markers$tissue_type <- 'GM'
+wm_markers$tissue_type <- 'WM'
+
+# combine and write output to file:
+markers <- rbind(gm_markers, wm_markers)
+write.csv(markers, file=paste0(data_dir, 'human_subcluster_markers.csv'), quote=FALSE)
+
+
+
+################################################################################
+# load human data
+################################################################################
+
+degs <- read.csv(paste0(data_dir, 'human_subcluster_markers.csv'))
+degs$group <- factor(
+  as.character(degs$cluster),
+  levels = levels(seurat_human$annotation)
+)
+
+# exclude MT genes:
+degs <- degs[!grepl('MT-', degs$gene),]
+
+n_degs <- 20
+plot_genes <- degs %>%
+  arrange(group) %>%
+  subset(p_val_adj <= 0.05) %>%
+  group_by(group) %>%
+  top_n(n_degs, wt=avg_log2FC)  %>%
+  .$gene %>% unique
+
+# scale genes:
+seurat_human <- ScaleData(seurat_human, features=plot_genes)
+
+# set random seed
+set.seed(42)
+
+seurat_human$barcode <- colnames(seurat_human)
+temp <- table(seurat_human@meta.data$annotation)
+
+df <- data.frame()
+for(i in 1:length(temp)){
+
+  if(temp[[i]] < 5000){
+    cur_df <- seurat_human@meta.data %>% subset(annotation == names(temp)[i])
+  } else{
+    cur_df <- seurat_human@meta.data %>% subset(annotation == names(temp)[i]) %>% sample_n(5000)
+  }
+  df <- rbind(df, cur_df)
+}
+
+p <- DoHeatmap(
+  seurat_human %>% subset(barcode %in% df$barcode),
+  features=unlist(plot_genes),
+  group.by='annotation',
+  group.colors = human_cp,
+  raster=TRUE, slot='scale.data'
+) + theme(
+  axis.text.y = element_text(face='italic', size=3)
+)
+
+pdf(paste0(fig_dir, 'marker_gene_heatmap_human_visium_subcluster.pdf'), width=12, height=8, useDingbats=FALSE)
+p
+dev.off()
+
+
+
+
+################################################################################
+# load regular marker genes (not subcluster)
+################################################################################
+
+degs <- read.csv('/dfs7/swaruplab/smorabit/analysis/ADDS_2021/visium/human/DEGs/data/human_visium_cluster_markers.csv')
+degs$group <- factor(
+  as.character(degs$group),
+  levels = levels(seurat_human$annotation)
+)
+
+# exclude MT genes:
+degs <- degs[!grepl('MT-', degs$gene),]
+
+n_degs <- 20
+plot_genes <- degs %>%
+  arrange(group) %>%
+  subset(p_val_adj <= 0.05) %>%
+  group_by(group) %>%
+  top_n(n_degs, wt=avg_log2FC)  %>%
+  .$gene %>% unique
+
+# scale genes:
+seurat_human <- ScaleData(seurat_human, features=plot_genes)
+
+
+# set random seed
+set.seed(42)
+
+seurat_human$barcode <- colnames(seurat_human)
+temp <- table(seurat_human@meta.data$annotation)
+
+df <- data.frame()
+for(i in 1:length(temp)){
+
+  if(temp[[i]] < 5000){
+    cur_df <- seurat_human@meta.data %>% subset(annotation == names(temp)[i])
+  } else{
+    cur_df <- seurat_human@meta.data %>% subset(annotation == names(temp)[i]) %>% sample_n(5000)
+  }
+  df <- rbind(df, cur_df)
+}
+
+p <- DoHeatmap(
+  seurat_human %>% subset(barcode %in% df$barcode),
+  features=unlist(plot_genes),
+  group.by='annotation',
+  group.colors = human_cp,
+  raster=TRUE, slot='scale.data'
+) + theme(
+  axis.text.y = element_text(face='italic', size=3)
+)
+
+pdf(paste0(fig_dir, 'marker_gene_heatmap_human_visium.pdf'), width=12, height=8, useDingbats=FALSE)
+p
+dev.off()
+
+```

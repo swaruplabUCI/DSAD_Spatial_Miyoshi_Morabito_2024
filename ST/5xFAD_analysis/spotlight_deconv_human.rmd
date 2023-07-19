@@ -1,0 +1,475 @@
+```{r eval=FALSE}
+
+library(Seurat)
+library(tidyverse)
+library(cowplot)
+library(Matrix)
+library(viridis)
+library(harmony)
+library(ggpubr)
+library(patchwork)
+library(RColorBrewer)
+library(ggrepel)
+library(SPOTlight)
+
+
+setwd("/dfs7/swaruplab/smorabit/analysis/ADDS_2021/visium/human/")
+
+fig_dir <- "figures/"
+data_dir <- "data/"
+
+umap_theme <- theme(
+  axis.line=element_blank(),
+  axis.text.x=element_blank(),
+  axis.text.y=element_blank(),
+  axis.ticks=element_blank(),
+  axis.title.x=element_blank(),
+  axis.title.y=element_blank(),
+  panel.background=element_blank(),
+  panel.border=element_blank(),
+  panel.grid.major=element_blank(),
+  panel.grid.minor=element_blank(),
+  plot.background=element_blank()
+)
+
+
+
+
+source('/dfs7/swaruplab/smorabit/analysis/scWGCNA/bin/spatial_functions.R')
+
+
+# re-load seurat obj & BayesSpace object:
+# seurat_human <- readRDS(paste0(data_dir,'ADDS_seurat_processed.rds'))
+
+# load visium
+seurat_human <- readRDS("/dfs7/swaruplab/emiyoshi/Visium_ADDS/ADDS_seurat_processed_annotated.rds")
+seurat_human$Diagnosis <- factor(
+  as.character(seurat_human$Diagnosis),
+  levels = c("Control", "earlyAD", "AD", "AD_DS")
+)
+
+
+human_cp <- c(
+      "L1" = "#8B3D5A", "L2-3" = "#E7BDE1", "L3-4" = "#E6A4CD",
+      "L3-4-5" = "#CF8BA3", "L5-6" = "#9E6D7F", "L6b" = "#CDAEB9", "WM1" = "#64BCDB", "WM2" = "#62A7D7", "WM3" = "#99C8D7")
+
+mouse_cp <- c(
+      "ctx-deep-layers" = "#5b4468", "ctx-upper-layers" = "#9581a4", "ctx-olfactory" = "#8073ab",
+      "hippocampus" = "#d6a5b2", "hippocampus-pyramidal" = "#e193aa",
+      "lateral-ventricle" = "#d2c3b2",
+      "striatum" = "#F0DE8C",
+      "thalamus1" = "#00CBA7", "thalamus2" = "#abcc94",
+      "hypothalamus-amygdala" = "#72c9b1",
+      "WM1" = "#325ea8", "WM2" = "#64bcdb", "WM-cerebral-peduncle" = "#62a7d7",
+      "erythrocytes-neurons" = "#d07fc4", "unknown" = "#c47c4d"
+    )
+
+
+# set factor levels for human clusters:
+seurat_human$annotation <- factor(
+  as.character(seurat_human$annotation),
+  levels = names(human_cp)
+)
+
+# set factor levels for mouse clusters
+seurat_5x$annotation <- factor(
+  as.character(seurat_5x$annotation),
+  levels = names(mouse_cp)
+)
+
+
+# load condition DEGs
+degs_adds <- read.csv("/dfs7/swaruplab/emiyoshi/Visium_ADDS/DEGs/DSAD_vs_Control/DSAD_vs_Control_all.csv")
+degs_ead <- read.csv("/dfs7/swaruplab/emiyoshi/Visium_ADDS/DEGs/earlyAD_vs_Control/earlyAD_vs_Control_all.csv")
+degs_lad <- read.csv("/dfs7/swaruplab/emiyoshi/Visium_ADDS/DEGs/lateAD_vs_Control/lateAD_vs_Control_all.csv")
+
+# gene table
+vis_gene_table <- data.table::fread('~/swaruplab/smorabit/data/ADDS_2021/visium/Dec_13_2021/spaceranger_count/Human1/outs/filtered_feature_bc_matrix/features.tsv.gz') %>% as.data.frame()
+
+vis_gene_table <- vis_gene_table[,1:2]
+colnames(vis_gene_table) <- c('gene_id', 'gene_name')
+
+
+
+# re-load integrated
+seurat_obj <- readRDS(file="/dfs7/swaruplab/smorabit/analysis/ADDS_2021/splitseq/integration/data/ADDS_AD_integrated.rds" )
+
+# add colors
+sc_color_df <- read.csv(file=paste0('/dfs7/swaruplab/smorabit/analysis/ADDS_2021/splitseq/integration/data/cell_identity.csv'))
+seurat_obj@misc$color_scheme <- sc_color_df
+human_cp <- sc_color_df$colour
+names(human_cp) <- sc_color_df$group
+
+
+ct_cp <- human_cp[c('OPC3', 'ODC3', 'MG1', 'ASC4', 'EX L5-6', 'INH PVALB+', 'SMC')]
+names(ct_cp) <- c('OPC', 'ODC', 'MG', 'ASC', 'EX', 'INH', 'VASC')
+
+```
+
+
+Load the parallel spotlight outputs:
+
+```{r eval=FALSE}
+
+# get list of spotlight output files
+spotlight_dir <- '/dfs7/swaruplab/smorabit/analysis/ADDS_2021/visium/human/deconvolution/celltype/'
+spotlight_files <- paste0(spotlight_dir, dir(spotlight_dir))
+spotlight_files <- spotlight_files[grepl('.csv', spotlight_files)]
+
+# load each file and merge into one dataframe
+spotlight_df <- do.call(rbind, lapply(spotlight_files, function(x){read.csv(x)}))
+rownames(spotlight_df) <- spotlight_df$X
+spotlight_df <- spotlight_df %>% select(-c(X, res_ss))
+colnames(spotlight_df) <- paste0(colnames(spotlight_df), '_deconv')
+
+# match the barcodes in the seurat object with the spotlight df
+ix <- match(colnames(seurat_human), rownames(spotlight_df))
+
+# merge with the seurat object
+seurat_human@meta.data <- cbind(seurat_human@meta.data, spotlight_df[ix,])
+
+# save the result
+saveRDS(seurat_human, file=paste0(data_dir,'ADDS_seurat_processed.rds'))
+
+
+feats <- c('ASC_deconv', 'EX_deconv', 'INH_deconv', 'MG_deconv', 'ODC_deconv', 'OPC_deconv', 'VASC_deconv')
+
+for(cur_gene in feats){
+  cur_group <- strsplit(cur_gene, '_')[[1]][1]
+  p <- SampleFeaturePlot(
+    seurat_human,
+    feature=cur_gene,
+    #samples_to_plot = selected_samples,
+    sample_labels = c("Diagnosis", "Sex", 'Age'),
+    ncol = 10,
+    raster=TRUE,
+    plot_max = 'q95',
+    plot_min = 'q0',
+    colfunc = colorRampPalette(c('grey90', ct_cp[cur_group]), bias=2),
+    rev_colors=FALSE,
+    dpi=800,
+    combine=FALSE
+  )
+
+  p <- lapply(p, function(x){
+    x + theme(
+      plot.title = element_text(face='bold', size=15, vjust=-1),
+      plot.margin = margin(0,0,0,0)
+    ) + labs(fill=paste0(cur_group, '\nproportion'))
+  })
+
+  patch <- wrap_plots(p, ncol=7, widths=1, heights=1) + plot_layout(guides='collect')
+
+  pdf(paste0(fig_dir, 'spotlight/', cur_gene, '_featureplot.pdf'), width=12, height=12)
+#  print(p)
+  print(patch)
+  dev.off()
+
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# visualize:
+p <- DimPlot(seurat_obj, group.by = 'cell_type')
+g <- ggplot_build(p)
+g$data[[1]]["colour"] %>% head
+
+
+
+patch_list <- list()
+feats <- colnames(spotlight_df)
+samples <- unique(seurat_human$combined_id)
+for(cur_feat in feats){
+  print(cur_feat)
+  # plot_limits[2] <- 0.25
+
+
+  plot_limits <- c(0, as.numeric(quantile(plot_df[[cur_feat]], 0.95)))
+  #plot_limits <- range(plot_df[[cur_feat]])
+
+  plot_list <- list()
+  for(cur_sample in samples){
+    print(cur_sample)
+
+    plot_df <- seurat_human@meta.data %>%
+      subset(combined_id == cur_sample) %>%
+      arrange(get(cur_feat))
+
+
+    plot_df[[cur_feat]] <- ifelse(
+      plot_df[[cur_feat]] > max(plot_limits), max(plot_limits), plot_df[[cur_feat]]
+    )
+
+    plot_list[[cur_sample]] <- plot_df  %>%
+      ggplot(aes_string(x='col', y='row', color=cur_feat)) +
+      rasterise(geom_point(size=0.05), dpi=600) +
+      scale_color_viridis(limits=plot_limits) +
+      ggtitle(cur_sample) +
+      umap_theme +
+      theme(plot.title=element_text(hjust=0.5, size=4))
+
+  }
+
+  patch_list[[cur_feat]] <- wrap_plots(plot_list, ncol=10, size=2) +
+    plot_layout(guides = 'collect')
+    plot_annotation(
+      title=cur_feat, theme=theme(plot.title=element_text(hjust=0.5))
+    )
+
+}
+
+
+pdf(paste0(fig_dir, 'spotlight_deconv.pdf'), width=15, height=6)
+patch_list
+dev.off()
+
+
+```
+
+Plot results as violin plots:
+
+```{r eval=FALSE}
+
+st_diag_cp <- c("Control" = "#B8DBC5", "earlyAD" = "#E7BDE1" , "AD" = "#CF8BA3", "AD_DS" = "#9E6D7F")
+
+human_cp <- c(
+      "L1" = "#8B3D5A", "L2-3" = "#E7BDE1", "L3-4" = "#E6A4CD",
+      "L3-4-5" = "#CF8BA3", "L5-6" = "#9E6D7F", "L6b" = "#CDAEB9", "WM1" = "#64BCDB", "WM2" = "#62A7D7", "WM3" = "#99C8D7")
+
+st_color_df <- data.frame(
+  colour = as.character(human_cp),
+  group = names(human_cp)
+)
+st_color_df$group <- factor(as.character(st_color_df$group), levels=as.character(st_color_df$group))
+st_cp <- st_color_df$colour; names(st_cp) <- as.character(st_color_df$group)
+
+feats <- colnames(spotlight_df)
+
+p <- custom_vln(
+    seurat_human,
+    features = feats,
+    group.by = 'annotation',
+    add_boxplot=FALSE,
+    split.by = 'Diagnosis',
+    split_colors= st_diag_cp,
+    add_colorbar=TRUE,
+    plot_ymin = 0,
+    comparisons=NA,
+    group_color_df = st_color_df
+  )
+
+
+pdf(paste0(fig_dir, 'spotlight_vln_stack_test.pdf'), width=6, height=4)
+p
+dev.off()
+
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+OLD
+
+
+Run spotlight on one visium sample
+
+```{r eval=FALSE}
+
+
+# load visium & split-seq seurat objects:
+seurat_human <- readRDS(paste0(data_dir,'ADDS_seurat_processed.rds'))
+
+seurat_obj <- readRDS("/dfs7/swaruplab/smorabit/analysis/ADDS_2021/splitseq/data/ADDS_integrated_scvi.rds")
+
+# only get the FCX:
+seurat_obj <- subset(seurat_obj, Region == 'FCX')
+
+# load split-seq cluster marker genes:
+markers <- read.csv('/dfs7/swaruplab/smorabit/analysis/ADDS_2021/splitseq/DEGs/data/celltype_markers.csv')
+markers <- markers %>%  dplyr::rename(cluster = group)
+
+old_markers <- read.csv(file='/dfs7/swaruplab/smorabit/analysis/ADDS_2021/visium/5xFAD/pilot/test_SPOTlight/data/zhou_marker_genes_spotlight.csv')
+
+
+
+sp_subset <- subset(seurat_human, Sample == "Dec_13_2021_Human1")
+cur_image <- names(sp_subset@images)[sapply(names(sp_subset@images), function(x){nrow(sp_subset@images[[x]]@coordinates) > 0})]
+sp_subset@images <- list(cur_image = sp_subset@images[[cur_image]])
+
+set.seed(123)
+
+# subset markers to only have things with FC >= 1
+# sl_markers <- subset(markers, avg_log2FC >= 1)
+# table(sl_markers$cluster)
+
+# subset markers to take top 100 DEGs:
+sl_markers <- markers %>% subset(p_val_adj <= 0.05) %>%
+  group_by(cluster) %>%
+  top_n(10000000, wt=avg_log2FC)
+
+table(sl_markers$cluster)
+
+
+spotlight_ls <- spotlight_deconvolution(
+  se_sc = seurat_obj,
+  counts_spatial = sp_subset@assays$Spatial@counts,
+  clust_vr = "cell_type", # Variable in sc_seu containing the cell-type annotation
+  cluster_markers = sl_markers, # Dataframe with the marker genes
+  cl_n = 2500, # number of cells per cell type to use
+  hvg = 3000, # Number of HVG to use
+  ntop = NULL, # How many of the marker genes to use (by default all)
+  transf = "uv", # Perform unit-variance scaling per cell and spot prior to factorzation and NLS
+  method = "nsNMF", # Factorization method
+  min_cont = 0 # Remove those cells contributing to a spot below a certain threshold
+)
+
+saveRDS(object = spotlight_ls, file = "data/spotlight_test_top100.rds")
+
+
+
+
+
+
+nmf_mod <- spotlight_ls[[1]]
+decon_mtrx <- spotlight_ls[[2]]
+
+
+decon_mtrx[, colnames(decon_mtrx) != "res_ss"] %>% dim
+
+#This is the equivalent to setting min_cont to 0.04
+decon_mtrx_sub <- decon_mtrx[, colnames(decon_mtrx) != "res_ss"]
+decon_mtrx_sub[decon_mtrx_sub < 0.08] <- 0
+decon_mtrx <- cbind(decon_mtrx_sub, "res_ss" = decon_mtrx[, "res_ss"])
+rownames(decon_mtrx) <- colnames(sp_subset)
+
+
+decon_df <- decon_mtrx %>%
+  data.frame() %>%
+  tibble::rownames_to_column("barcodes")
+
+sp_subset@meta.data <- sp_subset@meta.data[,1:30]
+sp_subset@meta.data <- sp_subset@meta.data %>%
+  tibble::rownames_to_column("barcodes") %>%
+  dplyr::left_join(decon_df, by = "barcodes") %>%
+  tibble::column_to_rownames("barcodes")
+
+
+
+
+```
+
+
+Inspect the topic profiles for each cluster:
+
+```{r eval=FALSE}
+
+h <- NMF::coef(nmf_mod[[1]])
+rownames(h) <- paste("Topic", 1:nrow(h), sep = "_")
+topic_profile_plts <- SPOTlight::dot_plot_profiles_fun(
+  h = h,
+  train_cell_clust = nmf_mod[[2]])
+
+pdf(paste0(fig_dir, 'spotlight_topic_profiles.pdf'), width=10, height=10)
+topic_profile_plts[[2]] + ggplot2::theme(
+  axis.text.x = ggplot2::element_text(angle = 90),
+  axis.text = ggplot2::element_text(size = 12))
+dev.off()
+
+```
+
+Visualize
+
+```{r eval=FALSE}
+
+p <- Seurat::SpatialFeaturePlot(
+  object = sp_subset,
+  features = c("ASC12", "EX2", "INH10", "ODC0", "PER31", "MG6"),
+  alpha = c(0.1, 1), ncol=3)
+
+
+pdf(paste0(fig_dir, 'spotlight_featureplot.pdf'), width=12, height=8)
+p
+dev.off()
+
+
+# scatterpie
+cell_types_all <- colnames(decon_mtrx)[which(colnames(decon_mtrx) != "res_ss")]
+
+p <- SPOTlight::spatial_scatterpie(se_obj = sp_subset,
+                              cell_types_all = cell_types_all,
+                              #img_path =  "/dfs7/swaruplab/smorabit/data/Visium_Mouse_2021/July_2021/spaceranger_count/Visium4/outs/spatial/tissue_lowres_image.png",
+                              img_path = "",
+                              pie_scale = 0.4)
+
+
+
+pdf(paste0(fig_dir, 'spotlight_scatterpie.pdf'), width=9, height=9)
+p
+dev.off()
+
+
+
+# plot with ggplot
+
+feats <- as.character(unique(markers$cluster))
+
+library(ggrastr)
+
+plot_list <- list()
+for(cur_feat in feats){
+
+  plot_list[[cur_feat]] <- sp_subset@meta.data %>%
+    ggplot(aes_string(x = "imagecol", y = "imagerow", color=cur_feat)) +
+    rasterise(geom_point(), dpi=800) +
+    scale_color_gradientn(colors=viridis(256)) +
+    umap_theme
+
+}
+
+
+
+
+
+
+pdf(paste0(fig_dir, 'spotlight_ggplot_top100.pdf'), width=16, height=8)
+wrap_plots(plot_list, ncol=4)
+dev.off()
+
+
+```

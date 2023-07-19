@@ -1,0 +1,1306 @@
+
+```{r eval=FALSE}
+
+library(tidyverse)
+library(cowplot)
+library(viridis)
+library(Seurat)
+library(ggrastr)
+library(ggpubr)
+
+theme_set(theme_cowplot())
+
+setwd('~/swaruplab/smorabit/analysis/ADDS_2021/hyperion/')
+
+data_dir <- 'data/'
+fig_dir <- 'figures/'
+
+# re-load seurat object:
+seurat_obj <- readRDS(paste0(data_dir, 'hyperion_seurat_processed.rds'))
+
+
+# load snRNA-seq data just to plot some expressions
+seurat_rna <- readRDS(file="/dfs7/swaruplab/smorabit/analysis/ADDS_2021/splitseq/integration/data/ADDS_AD_integrated.rds" )
+
+
+tmp <- distinct(seurat_obj@meta.data[,c('Diagnosis', 'sample', 'TargetRegion')])
+
+```
+
+make a table with all of the samples 
+
+```{r eval=FALSE}
+
+imc_files <- dir(data_dir)
+imc_files <- imc_files[grepl('.tsv', imc_files)]
+imc_files <- imc_files[!grepl('TEST', imc_files)]
+
+
+df <- Reduce(rbind, lapply(imc_files, function(cur_file){
+    tmp <- strsplit(cur_file, '\\[')[[1]]
+    tmp1 <- tmp[1]; tmp2 <- tmp[2]
+    roi <- strsplit(tmp2, '\\]')[[1]][1]
+
+    if(grepl('final', cur_file)){
+        slide <- paste0('Slide_', strsplit(tmp1, '_')[[1]][4])
+    } else{
+        slide <- strsplit(tmp1, 'IMC_')[[1]][2]
+    }
+
+    df <- read.delim(paste0(data_dir, cur_file), sep='\t')
+    df$roi <- roi 
+    df$slide <- slide 
+    df$sample <- paste0(slide, '-', roi)
+    df
+}))
+
+
+
+# exclude list: 
+ 
+# slide 1: 
+# 1,2,3,15
+
+# slide 2: 
+# 1,17
+
+# slide 3:
+# 3,4,7,10,16,17
+
+exclude <- c(
+    'Slide_1-ROI_001',
+    'Slide_1-ROI_002',
+    'Slide_1-ROI_003',
+    'Slide_1-ROI_015',
+    'Slide_2-ROI_001',
+    'Slide_2-ROI_013',
+    'Slide_2-ROI_017',
+    'Slide_3-ROI_003',
+    'Slide_3-ROI_004',
+    'Slide_3-ROI_007',
+    'Slide_3-ROI_010',
+    'Slide_3-ROI_016',
+    'Slide_3-ROI_017'
+)
+df <- df %>% subset(!(sample %in% exclude))
+meta_df <- df[,c('slide', 'roi', 'sample', 'nuclei_X', 'nuclei_y')]
+meta_df <- meta_df %>% dplyr::rename(c(x = nuclei_X, y = nuclei_y))
+
+length(unique(df$sample))
+
+```
+
+Selecting markers 
+
+```{r eval=FALSE}
+
+# just get the whole cell features
+# pca_df <- df[,grepl('Entire.cell', colnames(df))] 
+# pca_df <- pca_df[,!grepl('Type', colnames(pca_df))]
+# pca_df <- na.omit(pca_df)
+
+
+test <- colnames(df)
+#test <- test[grepl('Entire', test)]
+test <- test[grepl('body', test)]
+test <- test[2:length(test)]
+df <- df[,test]
+
+pattern <- "\\b\\.{4}\\b"
+
+probe_names <- unlist(lapply(test, function(x){
+    tmp <- strsplit(x, pattern)[[1]]
+    tmp <- tmp[length(tmp)]
+    tmp
+}))
+names(probe_names) <- colnames(df)
+as.character(probe_names)
+
+probes_keep <- c(
+    'CD44', 'rPTPRM', 'Moesin', 'Cystatin_C',
+    'Beta_Amyloid', 'CD68', 'Map2', 'ERBIN',
+    'BIN1', 'CD163', 'GFAP', 'Foxp2',
+    'PDGFRa', 'NeuN', 'APOE', 'Midkine', 'Olig2', 'CL.P1',
+    'COL25A1', 'CX3CR1', 'GCP5', 'CALB1', 'Phospho_Tau_AT8',
+    'Iba1', 'Mac_2', 'YKL.40', 'S100b', 'Netrin1', 'Apolipo_J_CLU'
+)
+
+probe_names <- probe_names[probe_names %in% probes_keep]
+df <- df[,names(probe_names)]
+colnames(df) <- as.character(probe_names)
+
+
+```
+
+Process data using Seurat 
+
+```{r eval=FALSE}
+
+# create the seurat object
+mat <- t(df)
+mat[is.na(mat)] <- 0
+colnames(mat) <- 1:ncol(mat)
+rownames(meta_df) <- 1:nrow(meta_df)
+seurat_obj <- CreateSeuratObject(counts = mat, meta=meta_df)
+
+# get ROI number:
+seurat_obj$roi_num <- as.numeric(gsub('ROI_0', '', seurat_obj$roi))
+seurat_obj$slide_num <- as.numeric(gsub('Slide_', '', seurat_obj$slide))
+seurat_obj$slide_roi <- paste0(seurat_obj$slide_num, '-', seurat_obj$roi_num)
+
+
+# additional metadata
+slide_meta <- read.table('data/slide_meta.txt', sep = '\t', header=1)
+
+slide_meta$roi_num <- as.numeric(unlist(lapply(slide_meta$TIFF.Name, function(x){
+    tmp <- strsplit(x, '_')[[1]]
+    tmp[length(tmp)]
+})))
+slide_meta$slide_roi <- paste0(slide_meta$SlideNo, '-', slide_meta$roi_num)
+
+all(seurat_obj$slide_roi %in% slide_meta$slide_roi)
+
+ix <- match(seurat_obj$slide_roi, slide_meta$slide_roi)
+meta <- slide_meta[ix, c('TIFF.Name', 'TargetRegion', 'post', 'SlideSample')]
+rownames(meta) <- colnames(seurat_obj)
+
+seurat_obj$TargetRegion <- meta$TargetRegion
+seurat_obj$post <- meta$post
+seurat_obj$SlideSample <- meta$SlideSample
+seurat_obj$TIFF.Name <- meta$TIFF.Name
+
+seurat_obj$Slide_SlideSample <- paste0(seurat_obj$slide_num, '-', seurat_obj$SlideSample)
+
+# load the other metadata 
+meta <- read.csv('data/ADDS_Hyperion_slides.csv')
+meta$Slide_SlideSample <- paste0(meta$SlideNo, '-', meta$SlideSampleNo)
+
+ix <- match(seurat_obj$Slide_SlideSample, meta$Slide_SlideSample)
+seurat_obj@meta.data<- cbind(seurat_obj@meta.data, meta[ix,c('Age', 'Sex', 'PMI', 'APoE', 'Tangle.Stage', 'Plaque.Stage', 'Diagnosis')])
+
+
+###########################################################################################
+# run Seurat 
+###########################################################################################
+
+seurat_obj <- NormalizeData(seurat_obj)
+seurat_obj <- ScaleData(seurat_obj)
+seurat_obj <- RunPCA(seurat_obj, features=rownames(seurat_obj))
+
+p <- ElbowPlot(seurat_obj)
+
+pdf(paste0(fig_dir, 'pca_elbow.pdf'), width=6, height=4)
+p
+dev.off()
+
+
+seurat_obj <- RunUMAP(seurat_obj, dims=1:10)
+seurat_obj <- FindNeighbors(seurat_obj, dims=1:10)
+seurat_obj <- FindClusters(seurat_obj, resolution=1)
+
+
+p <- DimPlot(seurat_obj)
+
+pdf(paste0(fig_dir, 'seurat_umap.pdf'), width=7, height=7)
+p
+dev.off()
+
+p1 <- DimPlot(seurat_obj, group.by = 'sample')
+p2 <- DimPlot(seurat_obj, group.by = 'slide')
+
+pdf(paste0(fig_dir, 'seurat_umap_samples.pdf'), width=14, height=6)
+p1 | p2
+dev.off()
+
+
+######################################################################
+# With harmony 
+######################################################################
+
+library(harmony)
+
+
+# seurat_obj <- RunHarmony(seurat_obj, dims=1:10, group.by.vars = 'slide')
+# seurat_obj <- RunHarmony(seurat_obj, dims=1:10, group.by.vars = 'Slide_SlideSample')
+seurat_obj <- RunHarmony(seurat_obj, dims=1:10, group.by.vars = 'TIFF.Name')
+
+seurat_obj <- RunUMAP(seurat_obj, reduction='harmony', dims=1:10, n.neighbors=25L, min.dist=0.05, spread=0.75)
+
+seurat_obj <- FindNeighbors(seurat_obj, reduction='harmony', dims=1:10)
+seurat_obj <- FindClusters(seurat_obj, resolution=0.75)
+
+# remove the smallest cluster 
+seurat_obj <- subset(seurat_obj, seurat_clusters != '12')
+seurat_obj$seurat_clusters <- droplevels(seurat_obj$seurat_clusters)
+
+# cluster dendro
+seurat_obj <- BuildClusterTree(seurat_obj, dims=1:5, reorder=TRUE)
+
+
+###########################################################################################
+# plotting
+###########################################################################################
+
+
+pdf(paste0(fig_dir, 'seurat_clustertree.pdf'), width=4, height=7)
+PlotClusterTree(seurat_obj, direction='rightwards')
+dev.off()
+
+
+p <- DimPlot(seurat_obj, label=TRUE)
+
+pdf(paste0(fig_dir, 'seurat_umap_harmony.pdf'), width=7, height=7)
+p
+dev.off()
+
+# p <- DimPlot(seurat_obj, label=TRUE, reduction='tsne')
+# pdf(paste0(fig_dir, 'seurat_tsne_harmony.pdf'), width=7, height=7)
+# p
+# dev.off()
+
+
+p <- DimPlot(seurat_obj, label=FALSE, split.by = 'seurat_clusters', ncol=5)
+
+pdf(paste0(fig_dir, 'seurat_umap_harmony_split.pdf'), width=10, height=10)
+p
+dev.off()
+
+p1 <- DimPlot(seurat_obj, group.by = 'sample')
+p2 <- DimPlot(seurat_obj, group.by = 'slide')
+
+pdf(paste0(fig_dir, 'seurat_umap_harmony_samples.pdf'), width=14, height=6)
+p1 | p2
+dev.off()
+
+p1 <- DimPlot(seurat_obj, group.by = 'seurat_clusters', split.by = 'TargetRegion', label=TRUE)
+
+pdf(paste0(fig_dir, 'seurat_umap_harmony_regions.pdf'), width=14, height=7)
+p1 
+dev.off()
+
+
+p1 <- DimPlot(seurat_obj, group.by = 'sample', split.by='slide')
+
+pdf(paste0(fig_dir, 'seurat_umap_harmony_samples_split.pdf'), width=14, height=6)
+p1
+dev.off()
+
+
+p <- DimPlot(seurat_obj, group.by = 'Slide_SlideSample', split.by = 'Diagnosis') 
+pdf(paste0(fig_dir, 'seurat_umap_sample_dx.pdf'), width=15, height=5)
+p
+dev.off()
+
+
+p <- DotPlot(seurat_obj, features=rownames(seurat_obj)) + 
+coord_flip() + RotatedAxis()
+
+pdf(paste0(fig_dir, 'seurat_dotplot_harmony.pdf'), width=14, height=7)
+p
+dev.off()
+
+p <- FeaturePlot(seurat_obj, features=rownames(seurat_obj), ncol=6, raster=TRUE)
+
+pdf(paste0(fig_dir, 'seurat_featureplot_harmony.pdf'), width=18, height=15)
+p
+dev.off()
+
+p <- VlnPlot(seurat_obj, features=rownames(seurat_obj), pt.size=0, stack=TRUE, flip=TRUE) + 
+RotatedAxis() + NoLegend()
+
+pdf(paste0(fig_dir, 'seurat_vlnplot_harmony.pdf'), width=14, height=14)
+p
+dev.off()
+
+
+
+p <- VlnPlot(
+  seurat_obj %>% subset(seurat_clusters %in% c(13, 15)), 
+  features = 'Beta-Amyloid', group.by = 'Diagnosis', pt.size=0)
+
+pdf(paste0(fig_dir, 'test_vln.pdf'), width=7, height=4)
+p
+dev.off()
+
+subset(seurat_obj@meta.data, seurat_clusters == 15) %>% .$Diagnosis %>% table
+
+
+p <- DotPlot(seurat_obj, features=rownames(seurat_obj), cluster.idents=TRUE) + 
+coord_flip() + RotatedAxis()
+
+pdf(paste0(fig_dir, 'seurat_dotplot.pdf'), width=14, height=7)
+p
+dev.off()
+
+p <- FeaturePlot(seurat_obj, features=rownames(seurat_obj), ncol=6, raster=TRUE)
+
+pdf(paste0(fig_dir, 'seurat_featureplot.pdf'), width=18, height=15)
+p
+dev.off()
+
+
+```
+
+Plotting the X/Y coords 
+
+```{r eval=FALSE}
+
+dir.create(paste0(fig_dir, 'coords/'))
+
+images <- unique(seurat_obj$TIFF.Name)
+cur_image <- images[1]
+plot_df <- subset(seurat_obj@meta.data, TIFF.Name == cur_image)
+
+for(cur_image in images){
+  print(cur_image)
+  p <- ggplot(plot_df, aes(x=x, y=y, color=seurat_clusters)) + 
+    geom_point() + theme_void() + NoLegend()
+
+  file_name <- paste0(cur_image, '_clusters.pdf')
+
+  pdf(paste0(fig_dir, 'coords/', file_name), width=7, height=7)
+  print(p)
+  dev.off()
+}
+
+
+```
+
+cluster Markers 
+
+```{r eval-FALSE}
+
+markers <- FindAllMarkers(
+    seurat_obj,
+    logfc.threshold = 0,
+    min.pct = 0,
+    min.cells.feature = 1,
+    min.cells.group = 1,
+    features = rownames(seurat_obj)
+)
+table(markers$cluster)
+
+subset(markers, cluster == 11 & p_val_adj < 0.05 & avg_log2FC > 0) %>% arrange(-avg_log2FC)
+subset(markers, cluster == 5 & p_val_adj < 0.05 & avg_log2FC > 0) %>% arrange(-avg_log2FC)
+
+subset(markers, gene == 'Mac-2') %>% arrange(-avg_log2FC) %>%  head
+
+
+
+# plot the marker gene heatmap:
+markers$cluster <- factor(as.character(markers$cluster), levels = levels(Idents(seurat_obj)))
+
+
+library(dendextend)
+
+mat <- markers %>% 
+    dplyr::select(c(cluster, gene, avg_log2FC)) %>% 
+   spread(cluster, avg_log2FC) 
+mat[is.na(mat)] <- 0
+labels <-mat[,1]
+mat <- as.matrix(mat[,-1])
+rownames(mat) <- labels
+
+dist_mat <- dist(mat, method = 'euclidean')
+hclust_avg <- hclust(dist_mat, method = 'average')
+dend <- as.dendrogram(hclust_avg)
+
+
+pdf(paste0(fig_dir, 'test_hclust.pdf'), width=5, height=5)
+plot(hclust_avg, cex=0.5, hang=-1)
+dev.off()
+
+labels(dend)
+
+markers$gene <- factor(as.character(markers$gene), levels = labels(dend))
+
+maxval <- 1; minval <- -1
+plot_df <- markers
+plot_df$avg_log2FC <- ifelse(plot_df$avg_log2FC > maxval, maxval, plot_df$avg_log2FC)
+plot_df$avg_log2FC <- ifelse(plot_df$avg_log2FC < minval, minval, plot_df$avg_log2FC)
+
+plot_df$textcolor <- ifelse(plot_df$avg_log2FC > 0.5, 'black', 'white')
+plot_df$Significance <- ifelse(plot_df$p_val_adj > 0.05, 'x', NA)
+
+
+p <- plot_df %>% 
+  ggplot(aes(x=gene, y=cluster, fill=avg_log2FC)) +
+  geom_tile() +
+  #geom_text(label=plot_df$Significance, color=plot_df$textcolor) +
+  scale_fill_gradient2(low='purple', mid='black', high='yellow') +
+  RotatedAxis() +
+ # labs(fill = 'Odds ratio') +
+  theme(
+    panel.border = element_rect(fill=NA, color='black', size=1),
+    axis.line.x = element_blank(),
+    axis.line.y = element_blank(),
+    panel.background = element_rect(fill='black', color='black'),
+    #axis.title.x = element_blank(),
+    #axis.title.y = element_blank(),
+    #axis.text.x = element_blank(),
+   # axis.ticks.x = element_blank(),
+   # axis.text.y = element_blank(),
+    #axis.ticks.y = element_blank(),
+    plot.margin=margin(0,0,0,0)
+  ) +
+  coord_equal() # + xlab(group1) + ylab(group2)
+
+
+# Plot the result
+pdf(paste0(fig_dir, 'marker_heatmap.pdf'),height=7, width=8)
+p
+dev.off()
+
+
+```
+
+Annotate clusters 
+
+```{r eval=FALSE}
+
+anno <- read.table('data/hyperion_clusters2.txt', sep='\t', header=1)
+
+# anno$cluster <- factor(
+#   as.character(anno$cluster),
+#   levels = levels(Idents(seurat_obj))
+# )
+
+color_df <- dplyr::select(anno, c(annotation, color)) %>% dplyr::rename(group = annotation, colour = color)
+
+anno <- anno %>% arrange(desc(cluster))
+anno$annotation <- factor(anno$annotation, levels=unique(anno$annotation))
+
+cp <- anno$color; names(cp) <- anno$annotation; 
+
+ix <- match(as.numeric(as.character(seurat_obj$seurat_clusters)), anno$cluster)
+seurat_obj$cell_type <- anno[ix, 'cell_type']
+seurat_obj$annotation <- anno[ix, 'annotation']
+
+
+
+
+
+p <- DimPlot(seurat_obj, group.by = 'cell_type', label=TRUE)
+pdf(paste0(fig_dir, 'seurat_umap_celltype.pdf'), width=7, height=7)
+p
+dev.off()
+
+p <- DimPlot(seurat_obj, group.by = 'annotation', label=TRUE, repel=TRUE) +
+  scale_color_manual(values=cp)
+pdf(paste0(fig_dir, 'seurat_umap_annotation.pdf'), width=10, height=7)
+p
+dev.off()
+
+
+p <- DimPlot(seurat_obj, group.by = 'annotation', split.by = 'Diagnosis', label=TRUE, repel=TRUE) + NoLegend()
+pdf(paste0(fig_dir, 'seurat_umap_annotation_dx.pdf'), width=10, height=7)
+p
+dev.off()
+
+
+
+p <- DimPlot(seurat_obj, group.by = 'TIFF.Name', split.by = 'TIFF.Name', label=FALSE, repel=TRUE,) + NoLegend()
+pdf(paste0(fig_dir, 'seurat_umap_tiff_slide.pdf'), width=18, height=18)
+p
+dev.off()
+
+
+saveRDS(seurat_obj, paste0(data_dir, 'hyperion_seurat_processed.rds'))
+
+```
+
+
+
+Plotting for paper:
+
+```{r eval=FALSE}
+
+source('/dfs7/swaruplab/smorabit/analysis/scWGCNA/bin/spatial_functions.R')
+
+library(hdWGCNA)
+
+
+
+Idents(seurat_obj) <- seurat_obj$annotation
+
+# cluster dendro
+
+seurat_obj <- BuildClusterTree(seurat_obj, dims=1:5, reorder=TRUE)
+
+seurat_obj$annotation <- factor(
+  as.character(seurat_obj$annotation),
+  levels = levels(Idents(seurat_obj))
+)
+
+###########################################################################################
+# plotting
+###########################################################################################
+
+
+pdf(paste0(fig_dir, 'seurat_clustertree_annotation.pdf'), width=7, height=7)
+PlotClusterTree(seurat_obj, direction='rightwards')
+dev.off()
+
+
+
+
+
+
+#################################################################################
+# Plot the UMAP colored by cluster
+#################################################################################
+
+p <- PlotEmbedding(
+  seurat_obj,
+  group.by = 'annotation',
+  raster_dpi = 500,
+  raster_scale=0.5, point_size=0.5,
+  plot_theme = umap_theme(),
+  color_df = color_df
+)
+
+pdf(paste0(fig_dir, 'seurat_umap_annotation.pdf'), width=10, height=10)
+p
+dev.off()
+
+#################################################################################
+# Plot the UMAP colored by cluster split by DX
+#################################################################################
+
+p <- PlotEmbedding(
+  seurat_obj,
+  group.by = 'annotation',
+  split.by = 'Diagnosis',
+  raster_dpi = 500,
+  raster_scale=0.5, point_size=0.5,
+  plot_theme = umap_theme(),
+  plot_under = TRUE,
+  color_df = color_df
+)
+
+pdf(paste0(fig_dir, 'seurat_umap_annotation_dx.pdf'), width=15, height=5)
+wrap_plots(p, ncol=3) + plot_layout(guides='collect')
+dev.off()
+
+#################################################################################
+# Plot the UMAP colored by cluster split by Region
+#################################################################################
+
+p <- PlotEmbedding(
+  seurat_obj,
+  group.by = 'annotation',
+  split.by = 'TargetRegion',
+  raster_dpi = 500,
+  raster_scale=0.5, point_size=0.5,
+  plot_theme = umap_theme(),
+  plot_under = TRUE,
+  color_df = color_df
+)
+
+pdf(paste0(fig_dir, 'seurat_umap_annotation_region.pdf'), width=10, height=5)
+wrap_plots(p, ncol=2) + plot_layout(guides='collect')
+dev.off()
+
+
+
+
+
+
+
+
+
+
+
+
+# plot_list <- FeatureEmbedding(
+#   seurat_obj, 
+#   features=rownames(seurat_obj), 
+#   combine=FALSE,
+#   raster=TRUE, 
+#   slot="scale.data"
+# )
+
+# plot_list <- lapply(plot_list, function(x){
+#   x <- x + scale_color_gradient2(high='red', mid='white', low='blue')
+# })
+
+# pdf(paste0(fig_dir, 'seurat_featureplot_harmony.pdf'), width=18, height=15)
+# wrap_plots(plot_list, ncol=6)
+# dev.off()
+
+
+
+```
+
+Make violin plots for each feature in each cluster 
+
+```{r eval=FALSE}
+
+library(patchwork)
+
+
+seurat_obj$Diagnosis <- factor(
+  as.character(seurat_obj$Diagnosis),
+  levels = c("Control", 'AD', 'AD_DS')
+)
+
+
+st_diag_cp <- c("Control" = "#B8DBC5",  "AD" = "#CF8BA3", "AD_DS" = "#9E6D7F")
+features <- rownames(seurat_obj)
+features <- labels(dend) # run the marker gene hclust above to use this
+clusters <- levels(seurat_obj$annotation)
+
+
+for(cur_cluster in clusters){
+  print(cur_cluster)
+  cur_seurat <- subset(seurat_obj, annotation == cur_cluster)
+
+  # if there's fewer than 25 cells, remove the groups:
+  tmp <- table(cur_seurat$Diagnosis)
+  remove <- names(which(tmp < 25))
+
+  if(length(remove) > 0){
+    cur_seurat <- cur_seurat[,!(cur_seurat$Diagnosis %in% remove)]
+    cur_seurat$Diagnosis <- droplevels(cur_seurat$Diagnosis)
+  }
+
+  if(length(levels(cur_seurat$Diagnosis)) == 2){
+    my_comparisons <- list(levels(cur_seurat$Diagnosis))
+  } else{
+    my_comparisons <- list( c('Control', 'AD'), c('AD', 'AD_DS'), c('Control', 'AD_DS') )
+  }
+
+  exp <- GetAssayData(cur_seurat, slot='data')
+  plot_list <- lapply(features, function(cur_feature){
+    plot_range <- range(exp[cur_feature,])
+    VlnPlot(
+        cur_seurat, 
+        features = cur_feature, group.by = 'Diagnosis', pt.size=0) + 
+        scale_fill_manual(values=st_diag_cp
+        ) + 
+        geom_boxplot(width=0.25, outlier.shape=NA, fill='white') + 
+        stat_compare_means(
+          comparisons=my_comparisons,
+         # label = 'p.signif',
+          test = 'wilcox'
+          ) + 
+        scale_y_continuous(limits=c(plot_range[1],plot_range[2]*1.33)) + 
+        xlab('') + theme(
+          axis.line.y = element_blank(),
+          axis.line.x = element_blank(),
+          panel.border = element_rect(linewidth=1, fill=NA, color='black'),
+          panel.grid.major.y = element_line(color='lightgrey'),
+          plot.margin=margin(0,0,0,0),
+          axis.title.x = element_blank(),
+          axis.title.y = element_blank(),
+          plot.title = element_text(vjust=-0.2)
+
+        ) + ylab('') + NoLegend()
+  })
+
+  patch <-   wrap_plots(plot_list, ncol=6) + plot_annotation(
+    title = cur_cluster
+  ) & theme(plot.title=element_text(hjust=0.5))
+
+  pdf(paste0(fig_dir, 'VlnPlots/', cur_cluster,'_vln_combine.pdf'), width=15, height=15)
+  print(patch)
+  dev.off()
+
+}
+
+
+```
+
+
+Markers with anotations 
+
+
+cluster Markers 
+
+```{r eval-FALSE}
+
+markers <- FindAllMarkers(
+    seurat_obj,
+    logfc.threshold = 0,
+    min.pct = 0,
+    min.cells.feature = 1,
+    min.cells.group = 1,
+    features = rownames(seurat_obj)
+)
+table(markers$cluster)
+
+write.table(markers, file='data/imc_cluster_markers.tsv', quote=FALSE, row.names=FALSE, sep='\t')
+
+markers <- read.table(file='data/imc_cluster_markers.tsv', header=1, sep='\t')
+
+subset(markers, cluster == 'Neuron (Abeta+, APOE+, Map2+)' & p_val_adj < 0.05 & avg_log2FC > 0) %>% arrange(desc(avg_log2FC)) %>% select(c(gene, avg_log2FC))
+subset(markers, cluster == 'Neuron (Map2+)' & p_val_adj < 0.05 & avg_log2FC > 0) %>% arrange(desc(avg_log2FC)) %>% select(c(gene, avg_log2FC))
+subset(markers, cluster == 'ASC (GFAP+ , Tau+)' & p_val_adj < 0.05 & avg_log2FC > 0) %>% arrange(desc(avg_log2FC)) %>% select(c(gene, avg_log2FC))
+
+subset(markers, cluster == 'ASC (GFAP+)' & p_val_adj < 0.05 & avg_log2FC > 0) %>% arrange(desc(avg_log2FC)) %>% select(c(gene, avg_log2FC))
+subset(markers, cluster == 'MG (CD44+)' & p_val_adj < 0.05 & avg_log2FC > 0) %>% arrange(desc(avg_log2FC)) %>% select(c(gene, avg_log2FC))
+
+
+test <- DotPlot(
+  seurat_rna, 
+  features=c(
+    'CD44', 'CD163', 'CD68', 'CX3CR1', 'CLU',
+    'ERBIN', 'BIN1', 'FOXP2', 'APP', 'MAPT', 'APOE', 'GFAP', 'S100B'),
+  group.by = 'annotation'
+  ) + coord_flip() + RotatedAxis()
+
+
+pdf(paste0(fig_dir, 'snRNA_dotplot.pdf'), width=12, height=8)
+test
+dev.off()
+
+# plot the marker gene heatmap:
+
+library(dendextend)
+
+mat <- markers %>% 
+    dplyr::select(c(cluster, gene, avg_log2FC)) %>% 
+   spread(cluster, avg_log2FC) 
+mat[is.na(mat)] <- 0
+labels <-mat[,1]
+mat <- as.matrix(mat[,-1])
+rownames(mat) <- labels
+
+dist_mat <- dist(mat, method = 'euclidean')
+hclust_avg <- hclust(dist_mat, method = 'average')
+dend <- as.dendrogram(hclust_avg)
+
+
+pdf(paste0(fig_dir, 'test_hclust_anno.pdf'), width=5, height=5)
+plot(hclust_avg, cex=0.5, hang=-1)
+dev.off()
+
+labels(dend)
+
+markers$gene <- factor(as.character(markers$gene), levels = labels(dend))
+
+maxval <- 1; minval <- -1
+plot_df <- markers
+plot_df$avg_log2FC <- ifelse(plot_df$avg_log2FC > maxval, maxval, plot_df$avg_log2FC)
+plot_df$avg_log2FC <- ifelse(plot_df$avg_log2FC < minval, minval, plot_df$avg_log2FC)
+
+plot_df$textcolor <- ifelse(plot_df$avg_log2FC > 0.5, 'black', 'white')
+plot_df$Significance <- ifelse(plot_df$p_val_adj > 0.05, 'x', NA)
+
+
+p <- plot_df %>% 
+  ggplot(aes(x=gene, y=cluster, fill=avg_log2FC)) +
+  geom_tile() +
+  #geom_text(label=plot_df$Significance, color=plot_df$textcolor) +
+  scale_fill_gradient2(low='purple', mid='black', high='yellow') +
+  RotatedAxis() +
+ # labs(fill = 'Odds ratio') +
+  theme(
+    panel.border = element_rect(fill=NA, color='black', size=1),
+    axis.line.x = element_blank(),
+    axis.line.y = element_blank(),
+    panel.background = element_rect(fill='black', color='black'),
+    #axis.title.x = element_blank(),
+    #axis.title.y = element_blank(),
+    #axis.text.x = element_blank(),
+   # axis.ticks.x = element_blank(),
+   # axis.text.y = element_blank(),
+    #axis.ticks.y = element_blank(),
+    plot.margin=margin(0,0,0,0)
+  ) +
+  coord_equal() # + xlab(group1) + ylab(group2)
+
+
+# Plot the result
+pdf(paste0(fig_dir, 'marker_heatmap_anno.pdf'),height=10, width=10)
+p
+dev.off()
+
+
+```
+
+
+
+
+Stacked bar plots 
+
+```{r eval=FALSE}
+
+
+
+################################################################################
+# snRNA-seq Proportion of Condition
+################################################################################
+
+
+seurat_meta <- seurat_obj@meta.data
+batches <- seurat_meta$Diagnosis %>% unique %>% as.character
+cur_clusters  <- seurat_meta$annotation %>% unique %>% as.character
+
+scale_vec <- table(seurat_meta$Diagnosis)
+
+proportion_df <- data.frame()
+for(i in 1:length(cur_clusters)){
+  cluster_meta <- subset(seurat_meta, annotation == cur_clusters[i])
+  cur_df <- as.data.frame(table(cluster_meta$Diagnosis)) %>% dplyr::rename(Count = Freq)
+
+  # compute the non-normalized % of cells in each group
+  cur_df$Freq <- cur_df$Count / sum(cur_df$Count)
+
+  # scale frequency to the total number of clusters in each Diagnosis
+  cur_df$Scaled <- cur_df$Count / scale_vec
+  cur_df$Scaled <- cur_df$Scaled / sum(cur_df$Scaled)
+
+  # add to ongoing proportion df
+  cur_df$cluster <- cur_clusters[i]
+  proportion_df <- rbind(proportion_df, cur_df)
+}
+
+proportion_df <- dplyr::rename(proportion_df, Diagnosis = Var1)
+proportion_df$cluster <- factor(proportion_df$cluster, levels=levels(seurat_meta$annotation))
+
+p <- ggplot(proportion_df, aes(y=Scaled, x=cluster, fill=Diagnosis)) +
+  geom_bar(stat='identity') +
+  scale_y_continuous(expand = c(0,0)) +
+  #scale_fill_manual(values=c('gray65', 'gray45')) +
+  theme(
+    panel.grid.major=element_blank(),
+    panel.grid.minor=element_blank(),
+    axis.text.x = element_text(angle=45, hjust=1),
+    axis.title.x = element_blank(),
+    legend.title = element_blank(),
+    axis.line.y =  element_blank(),
+    axis.line.x = element_blank(),
+    panel.border = element_rect(size=1, fill=NA, color='black')
+  ) +
+  scale_fill_manual(values=st_diag_cp)
+
+
+
+pdf(paste0(fig_dir, 'cluster_proportion_Diagnosis_scaled.pdf'), height=4, width=10)
+print(p)
+dev.off()
+
+p <- ggplot(proportion_df, aes(y=Freq, x=cluster, fill=Diagnosis)) +
+  geom_bar(stat='identity') +
+  scale_y_continuous(expand = c(0,0)) +
+  #scale_fill_manual(values=c('gray65', 'gray45')) +
+  theme(
+    panel.grid.major=element_blank(),
+    panel.grid.minor=element_blank(),
+    axis.text.x = element_text(angle=45, hjust=1),
+    axis.title.x = element_blank(),
+    legend.title = element_blank(),
+    axis.line.y =  element_blank(),
+    axis.line.x = element_blank(),
+    panel.border = element_rect(size=1, fill=NA, color='black')
+  ) +
+  scale_fill_manual(values=st_diag_cp)
+
+
+pdf(paste0(fig_dir, 'cluster_proportion_Diagnosis_raw.pdf'), height=4, width=10)
+print(p)
+dev.off()
+
+
+
+
+
+################################################################################
+# snRNA-seq Proportion of Sample
+################################################################################
+
+seurat_obj$sample <- as.factor(seurat_obj$sample)
+
+seurat_meta <- seurat_obj@meta.data
+batches <- seurat_meta$sample %>% unique %>% as.character
+cur_clusters  <- seurat_meta$annotation %>% unique %>% as.character
+
+scale_vec <- table(seurat_meta$sample)
+
+proportion_df <- data.frame()
+for(i in 1:length(cur_clusters)){
+  cluster_meta <- subset(seurat_meta, annotation == cur_clusters[i])
+  cur_df <- as.data.frame(table(cluster_meta$sample)) %>% dplyr::rename(Count = Freq)
+
+  # compute the non-normalized % of cells in each group
+  cur_df$Freq <- cur_df$Count / sum(cur_df$Count)
+
+  # scale frequency to the total number of clusters in each sample
+  cur_df$Scaled <- cur_df$Count / scale_vec
+  cur_df$Scaled <- cur_df$Scaled / sum(cur_df$Scaled)
+
+  # add to ongoing proportion df
+  cur_df$cluster <- cur_clusters[i]
+  proportion_df <- rbind(proportion_df, cur_df)
+}
+
+proportion_df <- dplyr::rename(proportion_df, sample = Var1)
+proportion_df$cluster <- factor(proportion_df$cluster, levels=levels(seurat_meta$annotation))
+
+p <- ggplot(proportion_df, aes(y=Scaled, x=cluster, fill=sample)) +
+  geom_bar(stat='identity') +
+  geom_hline(yintercept = 0.5, linetype='dashed') +
+  scale_y_continuous(expand = c(0,0)) +
+  #scale_fill_manual(values=c('gray65', 'gray45')) +
+  theme(
+    panel.grid.major=element_blank(),
+    panel.grid.minor=element_blank(),
+    axis.text.x = element_text(angle=45, hjust=1),
+    axis.title.x = element_blank(),
+    legend.title = element_blank(),
+    axis.line.y = element_line(colour = "black"),
+    axis.line.x = element_blank()
+  )
+
+pdf(paste0(fig_dir, 'cluster_proportion_sample_scaled.pdf'), height=4, width=10)
+print(p)
+dev.off()
+
+p <- ggplot(proportion_df, aes(y=Freq, x=cluster, fill=sample)) +
+  geom_bar(stat='identity') +
+  geom_hline(yintercept = 0.5, linetype='dashed') +
+  scale_y_continuous(expand = c(0,0)) +
+  #scale_fill_manual(values=c('gray65', 'gray45')) +
+  theme(
+    panel.grid.major=element_blank(),
+    panel.grid.minor=element_blank(),
+    axis.text.x = element_text(angle=45, hjust=1),
+    axis.title.x = element_blank(),
+    legend.title = element_blank(),
+    axis.line.y = element_line(colour = "black"),
+    axis.line.x = element_blank()
+  )
+
+pdf(paste0(fig_dir, 'cluster_proportion_sample_raw.pdf'), height=4, width=10)
+print(p)
+dev.off()
+
+
+
+
+
+################################################################################
+# Proportion of Sample in each cluster
+################################################################################
+
+seurat_meta <- seurat_obj@meta.data
+samples <- seurat_obj$sample %>% unique %>% as.character
+clusters <- seurat_obj$annotation %>% unique
+
+
+proportion_df <- data.frame()
+for(i in 1:length(clusters)){
+  cluster_meta <- subset(seurat_meta, annotation == clusters[i])
+  cur_df <- as.data.frame(table(cluster_meta$sample)/dim(cluster_meta)[1])
+  print(sum(cur_df$Freq))
+  cur_df$cluster <- clusters[i]
+  proportion_df <- rbind(proportion_df, cur_df)
+}
+
+proportion_df <- dplyr::rename(proportion_df, sample = Var1)
+proportion_df <- dplyr::rename(proportion_df, fraction = Freq)
+#proportion_df$cluster <- factor(proportion_df$cluster, levels=levels(seurat_obj$cluster_name))
+
+p <- ggplot(proportion_df, aes(y=fraction, x=cluster, fill=sample)) +
+  geom_bar(stat='identity') +
+  scale_y_continuous(expand = c(0,0)) +
+  #scale_fill_manual(values=color.scheme) +
+  #theme_minimal() +
+  theme(
+    panel.grid.major=element_blank(),
+    panel.grid.minor=element_blank(),
+    axis.text.x = element_text(angle=45, hjust=1),
+    axis.title.x = element_blank(),
+    legend.title = element_blank(),
+    axis.line.y = element_blank(),
+    axis.line.x = element_blank()
+  ) 
+pdf(paste0(fig_dir, "/sample_clusters_barplot.pdf"), height=4, width=10)
+print(p)
+dev.off()
+
+
+################################################################################
+# Proportion of Sample in each cluster
+################################################################################
+
+seurat_meta <- seurat_obj@meta.data
+samples <- seurat_obj$Diagnosis %>% unique %>% as.character
+clusters <- seurat_obj$annotation %>% unique
+
+
+proportion_df <- data.frame()
+for(i in 1:length(clusters)){
+  cluster_meta <- subset(seurat_meta, annotation == clusters[i])
+  cur_df <- as.data.frame(table(cluster_meta$Diagnosis)/dim(cluster_meta)[1])
+  print(sum(cur_df$Freq))
+  cur_df$cluster <- clusters[i]
+  proportion_df <- rbind(proportion_df, cur_df)
+}
+
+proportion_df <- dplyr::rename(proportion_df, sample = Var1)
+proportion_df <- dplyr::rename(proportion_df, fraction = Freq)
+#proportion_df$cluster <- factor(proportion_df$cluster, levels=levels(seurat_obj$cluster_name))
+
+p <- ggplot(proportion_df, aes(y=fraction, x=cluster, fill=sample)) +
+  geom_bar(stat='identity') +
+  scale_y_continuous(expand = c(0,0)) +
+  #scale_fill_manual(values=color.scheme) +
+  #theme_minimal() +
+  theme(
+    panel.grid.major=element_blank(),
+    panel.grid.minor=element_blank(),
+    axis.text.x = element_text(angle=45, hjust=1),
+    axis.title.x = element_blank(),
+    legend.title = element_blank(),
+    axis.line.y = element_blank(),
+    axis.line.x = element_blank()
+  ) 
+pdf(paste0(fig_dir, "/condition_clusters_barplot.pdf"), height=4, width=10)
+print(p)
+dev.off()
+
+
+################################################################################
+# Proportion of GM/WM in each cluster
+################################################################################
+
+seurat_meta <- seurat_obj@meta.data
+samples <- seurat_obj$TargetRegion %>% unique %>% as.character
+clusters <- seurat_obj$annotation %>% unique
+
+
+proportion_df <- data.frame()
+for(i in 1:length(clusters)){
+  cluster_meta <- subset(seurat_meta, annotation == clusters[i])
+  cur_df <- as.data.frame(table(cluster_meta$TargetRegion)/dim(cluster_meta)[1])
+  print(sum(cur_df$Freq))
+  cur_df$cluster <- clusters[i]
+  proportion_df <- rbind(proportion_df, cur_df)
+}
+
+proportion_df <- dplyr::rename(proportion_df, sample = Var1)
+proportion_df <- dplyr::rename(proportion_df, fraction = Freq)
+#proportion_df$cluster <- factor(proportion_df$cluster, levels=levels(seurat_obj$cluster_name))
+
+p <- ggplot(proportion_df, aes(y=fraction, x=cluster, fill=sample)) +
+  geom_bar(stat='identity') +
+  scale_y_continuous(expand = c(0,0)) +
+  #scale_fill_manual(values=color.scheme) +
+  #theme_minimal() +
+  theme(
+    panel.grid.major=element_blank(),
+    panel.grid.minor=element_blank(),
+    axis.text.x = element_text(angle=45, hjust=1),
+    axis.title.x = element_blank(),
+    legend.title = element_blank(),
+    axis.line.y = element_blank(),
+    axis.line.x = element_blank()
+  ) 
+pdf(paste0(fig_dir, "/region_clusters_barplot.pdf"), height=4, width=10)
+print(p)
+dev.off()
+
+################################################################################
+# Proportion of slidein each cluster
+################################################################################
+
+seurat_meta <- seurat_obj@meta.data
+samples <- seurat_obj$slide %>% unique %>% as.character
+clusters <- seurat_obj$annotation %>% unique
+
+
+proportion_df <- data.frame()
+for(i in 1:length(clusters)){
+  cluster_meta <- subset(seurat_meta, annotation == clusters[i])
+  cur_df <- as.data.frame(table(cluster_meta$slide)/dim(cluster_meta)[1])
+  print(sum(cur_df$Freq))
+  cur_df$cluster <- clusters[i]
+  proportion_df <- rbind(proportion_df, cur_df)
+}
+
+proportion_df <- dplyr::rename(proportion_df, sample = Var1)
+proportion_df <- dplyr::rename(proportion_df, fraction = Freq)
+#proportion_df$cluster <- factor(proportion_df$cluster, levels=levels(seurat_obj$cluster_name))
+
+
+
+p <- ggplot(proportion_df, aes(y=fraction, x=cluster, fill=sample)) +
+  geom_bar(stat='identity') +
+  scale_y_continuous(expand = c(0,0)) +
+  #scale_fill_manual(values=color.scheme) +
+  #theme_minimal() +
+  theme(
+    panel.grid.major=element_blank(),
+    panel.grid.minor=element_blank(),
+    axis.text.x = element_text(angle=45, hjust=1),
+    axis.title.x = element_blank(),
+    legend.title = element_blank(),
+    axis.line.y = element_blank(),
+    axis.line.x = element_blank()
+  ) 
+pdf(paste0(fig_dir, "/slide_clusters_barplot.pdf"), height=4, width=10)
+print(p)
+dev.off()
+
+
+
+```
+
+
+
+
+
+
+
+What did the pixie downstream processing notebook do? 
+
+Should we just use the cell-type markers for PCA + UMAP?
+
+Should I try to include all of the images together for this?
+
+```{r eval=FALSE}
+
+colnames(df)
+
+colnames(df)[grepl('Map2', colnames(df))]
+colnames(df)[grepl('S100b', colnames(df))]
+colnames(df)[grepl('Iba', colnames(df))]
+colnames(df)[grepl('GFAP', colnames(df))]
+
+quantile(na.omit(df$Biomarker.intensity..Entire.cell....Yb.173....S100b))
+sum(na.omit(df$Biomarker.intensity..Entire.cell....Yb.173....S100b) > 0)
+min(na.omit(df$Biomarker.intensity..Entire.cell....Yb.173....S100b))
+
+
+
+quantile(na.omit(df$Biomarker.intensity..Cell.body....Gd.156....GFAP))
+sum(na.omit(df$Biomarker.intensity..Entire.cell....Yb.173....S100b) > 0)
+min(na.omit(df$Biomarker.intensity..Entire.cell....Yb.173....S100b))
+
+
+p <- df %>%
+    ggplot(aes(
+        x=Biomarker.intensity..Entire.cell....Yb.173....S100b, 
+        y=Biomarker.intensity..Entire.cell....Gd.156....GFAP, 
+        color=sample)) + 
+    rasterise(geom_point(), dpi=500) +
+    xlab('S100b') + 
+    ylab('GFAP') +
+    RotatedAxis()
+    #scale_color_viridis() +
+    #theme_void() 
+
+
+
+pdf(paste0(fig_dir, 'test_imc_scatter.pdf'), width=15, height=15)
+p + facet_wrap(~sample, ncol=8)
+dev.off()
+
+
+#############################################################
+# Try to run PCA on the cells
+############################################################
+
+library(harmony)
+
+# just get the whole cell features
+pca_df <- df[,grepl('Entire.cell', colnames(df))] 
+pca_df <- pca_df[,!grepl('Type', colnames(pca_df))]
+pca_df <- na.omit(pca_df)
+
+plot_list <- list()
+samples <- unique(df$sample)
+for(cur_sample in samples){
+    print(cur_sample)
+    cur_df <- subset(df, sample == cur_sample)
+
+    tmp <- pca_df[rownames(pca_df) %in% rownames(cur_df),]
+    plot_df <- reshape2::melt(tmp)
+
+
+plot_df$variable <- gsub('[BiomarkerintensityEntirecell]', '', as.character(plot_df$variable))
+
+    p <- ggplot(
+        plot_df,
+        aes(x = variable, y=value, fill=variable)
+    ) + 
+    geom_violin() + 
+    RotatedAxis() + 
+    NoLegend() + 
+    theme(
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        strip.text.x = element_text(size = 6)
+    )
+
+    plot_list[[cur_sample]] <- p
+
+}
+
+
+
+pdf(paste0(fig_dir, 'test_imc_vln.pdf'), width=16, height=8)
+for(i in 1:length(plot_list)){
+    print(plot_list[[i]] + facet_wrap(~ variable, scales='free', ncol=10) + ggtitle(samples[i]))
+}
+dev.off()
+
+
+scale_df <- scale(pca_df)
+pcs <- svd(scale_df)
+pc_mat <- pcs$u[,1:15]
+
+# Harmony?
+# harm <- HarmonyMatrix(
+#     pc_mat,
+#     meta_data = df[rownames(pca_df),],
+#     vars_use = 'sample',
+#     do_pca=FALSE
+# )
+
+umap_coords <- uwot::umap(
+    X = pc_mat,
+      #scale_df,
+      #X = harm,
+      min_dist = 0.2,
+      n_neighbors= 25,
+      metric = 'cosine',
+      spread=0.5
+    )
+
+plot_df <- umap_coords %>% as.data.frame()
+plot_df$feat <- df[rownames(pca_df),'Biomarker.intensity..Entire.cell....Yb.173....S100b']
+
+p <- plot_df %>%
+    ggplot(aes(x=V1, y=V2, color=feat)) + 
+    rasterise(geom_point(), dpi=500) + 
+    scale_color_viridis() +
+    theme_void() 
+
+
+
+pdf(paste0(fig_dir, 'test_imc_umap2.pdf'), width=5, height=5)
+p
+dev.off()
+
+
+
+plot_df <- umap_coords %>% as.data.frame()
+plot_df$sample <- df[rownames(pca_df),'sample']
+
+p <- plot_df %>%
+    ggplot(aes(x=V1, y=V2, color=sample)) + 
+    rasterise(geom_point(), dpi=500) + 
+    #scale_color_viridis() +
+    theme_void() 
+
+
+
+pdf(paste0(fig_dir, 'test_imc_umap_sample.pdf'), width=10, height=5)
+p
+dev.off()
+
+
+```

@@ -1,0 +1,332 @@
+
+# Load libraries and visium samples
+
+```{r eval=FALSE}
+# conda activate cicero
+library(Seurat)
+library(harmony)
+library(tidyverse)
+library(cowplot)
+library(patchwork)
+library(RColorBrewer)
+colfunc <- colorRampPalette(rev(brewer.pal(11, 'Spectral' )))
+theme_set(theme_cowplot())
+
+setwd("/dfs3b/swaruplab/smorabit/analysis/ADDS_2021/visium/5xFAD/July_2021")
+
+fig_dir <- "figures/"
+data_dir <- "data/"
+
+umap_theme <- theme(
+  axis.line=element_blank(),
+  axis.text.x=element_blank(),
+  axis.text.y=element_blank(),
+  axis.ticks=element_blank(),
+  axis.title.x=element_blank(),
+  axis.title.y=element_blank(),
+  panel.background=element_blank(),
+  panel.border=element_blank(),
+  panel.grid.major=element_blank(),
+  panel.grid.minor=element_blank(),
+  plot.background=element_blank()
+)
+
+# re-load data:
+seurat_obj <- readRDS(file=paste0(data_dir, '5XFAD_seurat_processed.rds'))
+
+
+################################################################################
+# Load batch 1 data into Seurat:
+################################################################################
+
+spaceranger_outdir <- '~/swaruplab/smorabit/data/Visium_Mouse_2021/spaceranger_count/5XFAD_samples/'
+spaceranger_samples <- dir(spaceranger_outdir)
+
+# load metadata:
+meta <- read.csv('~/swaruplab/smorabit/analysis/5XFAD_visium_2021/pilot/data/pilot_samples.csv', stringsAsFactors=FALSE)
+rownames(meta) <- meta$SAMPLE
+
+seurat_list <- list()
+for(sample in spaceranger_samples){
+
+  print(sample)
+  cur <- Seurat::Load10X_Spatial(paste0(spaceranger_outdir, sample, '/outs/'))
+  cur$SAMPLE <- sample
+
+  # Add metadata:
+  cur$Condition <- meta[sample,'Condition']
+  cur$Age <- meta[sample,'Age']
+  cur$Slide <- 'V10M17-063'
+
+  # add basic metadata cols:
+  seurat_list[[sample]] <- cur
+}
+
+
+################################################################################
+# Load July 2021 data into Seurat:
+################################################################################
+
+spaceranger_outdir <- '~/swaruplab/smorabit/data/Visium_Mouse_2021/July_2021/spaceranger_count/'
+spaceranger_samples <- dir(spaceranger_outdir)
+
+# load metadata:
+meta <- read.csv('~/swaruplab/smorabit/data/Visium_Mouse_2021/July_2021/5XFAD_8samples.csv', stringsAsFactors=FALSE)
+meta <- meta[1:8,]
+meta$visium_sample <- paste0('Visium', meta$X)
+rownames(meta) <- meta$visium_sample
+
+# only keep important rows:
+meta <- meta %>% select(c(SAMPLE, Condition, Sex, Age, CaptureArea, Slide, visium_sample ))
+
+for(sample in spaceranger_samples){
+
+  print(sample)
+  cur <- Seurat::Load10X_Spatial(paste0(spaceranger_outdir, sample, '/outs/'))
+
+  # Add metadata:
+  for(meta_col in names(meta)){
+    cur@meta.data[[meta_col]] <- meta[sample, meta_col]
+  }
+
+  # add basic metadata cols:
+  seurat_list[[sample]] <- cur
+}
+
+# merge into one seurat obj:
+seurat_obj <- merge(seurat_list[[1]], seurat_list[2:length(seurat_list)])
+rm(seurat_list); gc();
+
+
+```
+
+
+
+# Processing
+
+```{r eval=FALSE}
+
+# QC plots
+plot_list <- list()
+for(sample in unique(seurat_obj$SAMPLE)){
+  cur <- subset(seurat_obj, SAMPLE == sample)
+  cur_condition <- as.character(unique(cur$Condition))
+  cur_image <- names(cur@images)[sapply(names(cur@images), function(x){nrow(cur@images[[x]]@coordinates) > 0})]
+  cur@images <- list(cur_image = cur@images[[cur_image]])
+  plot_list[[sample]] <- SpatialFeaturePlot(
+    cur, features='nCount_Spatial'
+  ) +
+    ggtitle(paste0('Sample ', sample, ' (',cur_condition, ')')) +
+    scale_color_gradientn(colors=colfunc(256), guide = guide_colorbar(barwidth=15, barheight=0.5, ticks=FALSE, angle=30)) +
+    theme(legend.position='bottom', legend.title = element_blank())
+}
+
+pdf(paste0(fig_dir, 'qc.pdf'), width=12, height=9, useDingbats=FALSE)
+# patch1 <- wrap_plots(plot_list[1:2], ncol=2)
+# patch2 <- wrap_plots(plot_list[3:4], ncol=2)
+# print(patch1 / patch2 + plot_annotation(title='n_count_spatial'))
+wrap_plots(plot_list, ncol=4)
+dev.off()
+
+# normalization:
+seurat_obj <- NormalizeData(seurat_obj)
+seurat_obj <- FindVariableFeatures(seurat_obj, nfeatures=3000)
+seurat_obj <- ScaleData(seurat_obj, features=VariableFeatures(seurat_obj))
+
+# dim reduction and clustering
+seurat_obj <- RunPCA(seurat_obj, verbose = FALSE)
+seurat_obj <- RunHarmony(seurat_obj, group.by.vars='Slide', assay='Spatial')
+seurat_obj <- RunUMAP(seurat_obj, reduction = "harmony", dims = 1:30)
+seurat_obj <- FindNeighbors(seurat_obj, reduction = "harmony", dims = 1:30)
+seurat_obj <- FindClusters(seurat_obj, verbose = FALSE, res=0.5)
+
+# add column for Time + Condition
+seurat_obj$Condition.Age <- paste0(as.character(seurat_obj$Condition), '_', as.character(seurat_obj$Age))
+
+saveRDS(seurat_obj, file=paste0(data_dir, '5XFAD_seurat_processed.rds'))
+
+# plot UMAP
+p1 <- DimPlot(seurat_obj, group.by='seurat_clusters', reduction = "umap", label = TRUE) + umap_theme
+p2 <- DimPlot(seurat_obj, group.by='SAMPLE', reduction = "umap", label = FALSE) + umap_theme
+
+pdf(paste0(fig_dir, 'umap_clusters.pdf'), width=12, height=5, useDingbats=FALSE)
+p1 | p2
+dev.off()
+
+
+# plot clusters on spatial image:
+p1 <- DimPlot(seurat_obj, group.by='seurat_clusters', reduction = "umap", label = TRUE) + umap_theme
+g <- ggplot_build(p1)
+colors <- g$data[[1]]["colour"]
+groups <- g$data[[1]]['group']
+color_df <- unique(data.frame(colors, groups)) %>% arrange(group)
+color_df$seurat_clusters <- levels(seurat_obj$seurat_clusters)
+colors.use <- color_df$colour
+names(colors.use) <- color_df$seurat_clusters
+
+# plot clusters as spatial dim plot:
+plot_list <- list()
+plot_list_tissue <- list()
+for(sample in unique(seurat_obj$SAMPLE)){
+
+  print(sample)
+
+  # subset by this sample
+  cur <- subset(seurat_obj, SAMPLE == sample)
+  cur_condition <- as.character(unique(cur$Condition))
+
+  # only keep current image:
+  cur_image <- names(cur@images)[sapply(names(cur@images), function(x){nrow(cur@images[[x]]@coordinates) > 0})]
+  cur@images <- list(cur_image = cur@images[[cur_image]])
+
+  # plot clusters
+  plot_list[[sample]] <- SpatialDimPlot(
+    cur,
+    group.by='seurat_clusters',
+    label = TRUE, label.size = 3
+  ) + NoLegend() + ggtitle(paste0(sample, ' (',cur_condition, ')')) + scale_fill_manual(values=colors.use)
+
+  plot_list_tissue[[sample]] <- SpatialFeaturePlot(cur,features='Mobp', alpha=0) + NoLegend() + ggtitle(paste0(sample, ' (',cur_condition, ')'))
+
+}
+
+
+pdf(paste0(fig_dir, 'spatial_clusters_seurat_obj.pdf'), width=12, height=12, useDingbats=FALSE)
+wrap_plots(plot_list, ncol=2)
+dev.off()
+
+
+# plot UMAP + spatial
+p1 <- DimPlot(seurat_obj, group.by='seurat_clusters', reduction = "umap", label = TRUE) +
+theme(
+  legend.position='bottom',
+  axis.ticks=element_blank(),
+  axis.text.x=element_blank(),
+  axis.text.y=element_blank(),
+) + ylab('UMAP 2') + xlab("UMAP 1")
+
+pdf(paste0(fig_dir, 'clusters_spatial.pdf'), width=18, height=8, useDingbats=FALSE)
+p1 + wrap_plots(plot_list, ncol=2) + wrap_plots(plot_list_tissue, ncol=2) + plot_layout(widths=c(1,1,1))
+dev.off()
+
+
+```
+
+Spatial expression plot of ERBIN:
+
+```{r eval=FALSE}
+
+plot_list <- list()
+pdf(paste0(fig_dir, 'Erbin_spatial.pdf'), width=6, height=7, useDingbats=FALSE)
+for(sample in unique(seurat_obj$SAMPLE)){
+  cur <- subset(seurat_obj, SAMPLE == sample)
+  cur_condition <- cur$Condition %>% unique
+  cur_age <- cur$Age %>% unique
+  cur_image <- names(cur@images)[sapply(names(cur@images), function(x){nrow(cur@images[[x]]@coordinates) > 0})]
+  cur@images <- list(cur_image = cur@images[[cur_image]])
+  p <- SpatialFeaturePlot(cur, features='Erbin') +
+    ggtitle(paste0('Sample ', sample, ', ', cur_condition, ', ', cur_age))
+  print(p)
+  plot_list[[sample]] <- p
+}
+dev.off()
+
+pdf(paste0(fig_dir, 'Erbin_spatial_combined.pdf'), width=12, height=12, useDingbats=FALSE)
+wrap_plots(plot_list, ncol=4)
+dev.off()
+
+```
+
+Differential expression analysis
+
+* ran the cluster_markers.sub script to find marker DEGs for clusters
+* ran 5xFAD 8mo vs 5xFAD 4 mo
+
+```{r eval=FALSE}
+
+###########################################################################
+# marker DEGs:
+###########################################################################
+
+DEG_dir <- "/dfs3b/swaruplab/smorabit/analysis/ADDS_2021/visium/5xFAD/July_2021/DEGs/data/cluster_markers/"
+DEG_tests <- dir(DEG_dir)
+
+# combine  all tests into one table:
+combined <- Reduce(rbind, lapply(dir(DEG_dir), function(file){
+  read.csv(paste0(DEG_dir, file))
+}))
+write.csv(combined, file=paste0('DEGs/data/cluster_markers.csv'), quote=FALSE, row.names=FALSE)
+
+###########################################################################
+# 5xFAD 8mo vs 4mo
+###########################################################################
+
+DEG_dir <- "/dfs3b/swaruplab/smorabit/analysis/ADDS_2021/visium/5xFAD/July_2021/DEGs/data/5XFAD_8mo_vs_4mo/"
+DEG_tests <- dir(DEG_dir)
+
+# combine  all tests into one table:
+combined <- Reduce(rbind, lapply(dir(DEG_dir), function(file){
+  read.csv(paste0(DEG_dir, file))
+})) %>% subset(p_val_adj < 0.05)
+write.csv(combined, file=paste0('DEGs/data/5XFAD_8mo_vs_4mo.csv'), quote=FALSE, row.names=FALSE)
+
+
+```
+
+DEGs that are in the cortex that are different between 5x 8mo & 4mo:
+
+```{r eval=FALSE}
+
+marker_degs <- read.csv(file='DEGs/data/cluster_markers.csv')
+age_degs <- read.csv(file='DEGs/data/5XFAD_8mo_vs_4mo.csv')
+
+cur_cluster <- 11
+
+cur_markers <- marker_degs %>% subset(group == cur_cluster)
+cur_degs <- age_degs %>% subset(group == cur_cluster)
+
+top_markers <- cur_markers %>% top_n(250, wt=abs(avg_log2FC)) %>% .$ gene %>% unique
+
+cur_degs %>% subset(gene %in% top_markers) %>% top_n(25, wt=abs(avg_log2FC)) %>% arrange(avg_log2FC)
+
+
+cur_gene <- 'Bst2'
+cur_gene <- 'Ifitm3'
+cur_gene <- 'Tmem107'
+
+plot_list <- list()
+pdf(paste0(fig_dir, cur_gene,'_spatial_genes.pdf'), width=6, height=7, useDingbats=FALSE)
+for(sample in unique(seurat_obj$SAMPLE)){
+  cur <- subset(seurat_obj, SAMPLE == sample)
+  cur_condition <- cur$Condition %>% unique
+  cur_age <- cur$Age %>% unique
+  cur_image <- names(cur@images)[sapply(names(cur@images), function(x){nrow(cur@images[[x]]@coordinates) > 0})]
+  cur@images <- list(cur_image = cur@images[[cur_image]])
+  p <- SpatialFeaturePlot(cur, features=cur_gene, alpha=c(0.1,1)) +
+    ggtitle(paste0('Sample ', sample, ', ', cur_condition, ', ', cur_age))
+  print(p)
+  plot_list[[sample]] <- p
+}
+dev.off()
+
+
+pdf(paste0(fig_dir, cur_gene,'_spatial_combined.pdf'), width=12, height=12, useDingbats=FALSE)
+wrap_plots(plot_list, ncol=4)
+dev.off()
+
+
+
+
+```
+
+
+
+5xFAD 8 months vs 4 months for each cluster
+Overlap with cluster marker genes
+send vivek 2 up and 2 down plotted on the spatial slide
+
+```{r eval=FALSE}
+
+
+
+```
