@@ -1,0 +1,2082 @@
+```{r eval=FALSE}
+
+# conda activate voyager
+library(Seurat)
+library(tidyverse)
+library(cowplot)
+library(patchwork)
+library(RColorBrewer)
+library(EnsDb.Hsapiens.v86)
+library(GenomicRanges)
+library(ensembldb)
+library(hdWGCNA)
+
+colfunc <- colorRampPalette(rev(brewer.pal(11, 'Spectral' )))
+theme_set(theme_cowplot())
+
+setwd("/dfs7/swaruplab/smorabit/analysis/ADDS_2021/visium/human/")
+
+fig_dir <- "figures/"
+data_dir <- "data/"
+
+source('/dfs7/swaruplab/smorabit/analysis/scWGCNA/bin/spatial_functions.R')
+
+
+# re-load seurat obj & BayesSpace object:
+# seurat_human <- readRDS(paste0(data_dir,'ADDS_seurat_processed.rds'))
+
+seurat_human <- readRDS("/dfs7/swaruplab/emiyoshi/Visium_ADDS/ADDS_seurat_processed_annotated.rds")
+
+seurat_human$Diagnosis <- factor(
+  as.character(seurat_human$Diagnosis),
+  levels = c("Control", "earlyAD", "AD", "AD_DS")
+)
+
+# 5x data:
+seurat_5x <- readRDS('/dfs7/swaruplab/emiyoshi/Visium_5X/5XFAD_seurat_processed_annotated.rds')
+
+seurat_5x$Age <- factor(
+  as.character(seurat_5x$Age),
+  levels = c("4mo", "6mo", "8mo", "12mo")
+)
+
+human_cp <- c(
+      "L1" = "#8B3D5A", "L2-3" = "#E7BDE1", "L3-4" = "#E6A4CD",
+      "L3-4-5" = "#CF8BA3", "L5-6" = "#9E6D7F", "L6b" = "#CDAEB9", "WM1" = "#64BCDB", "WM2" = "#62A7D7", "WM3" = "#99C8D7")
+
+mouse_cp <- c(
+      "ctx-deep-layers" = "#5b4468", "ctx-upper-layers" = "#9581a4", "ctx-olfactory" = "#8073ab",
+      "hippocampus" = "#d6a5b2", "hippocampus-pyramidal" = "#e193aa",
+      "lateral-ventricle" = "#d2c3b2",
+      "striatum" = "#F0DE8C",
+      "thalamus1" = "#00CBA7", "thalamus2" = "#abcc94",
+      "hypothalamus-amygdala" = "#72c9b1",
+      "WM1" = "#325ea8", "WM2" = "#64bcdb", "WM-cerebral-peduncle" = "#62a7d7",
+      "erythrocytes-neurons" = "#d07fc4", "unknown" = "#c47c4d"
+    )
+
+
+# set factor levels for human clusters:
+seurat_human$annotation <- factor(
+  as.character(seurat_human$annotation),
+  levels = names(human_cp)
+)
+
+# set factor levels for mouse clusters
+seurat_5x$annotation <- factor(
+  as.character(seurat_5x$annotation),
+  levels = names(mouse_cp)
+)
+
+
+# load condition DEGs
+degs_adds <- read.csv("/dfs7/swaruplab/emiyoshi/Visium_ADDS/DEGs/DSAD_vs_Control/DSAD_vs_Control_all.csv")
+degs_ead <- read.csv("/dfs7/swaruplab/emiyoshi/Visium_ADDS/DEGs/earlyAD_vs_Control/earlyAD_vs_Control_all.csv")
+degs_lad <- read.csv("/dfs7/swaruplab/emiyoshi/Visium_ADDS/DEGs/lateAD_vs_Control/lateAD_vs_Control_all.csv")
+
+degs_adds <- degs_adds[!grepl('MT-', degs_adds$gene),]
+degs_ead <- degs_ead[!grepl('MT-', degs_ead$gene),]
+degs_lad <- degs_lad[!grepl('MT-', degs_lad$gene),]
+
+
+# gene table
+vis_gene_table <- data.table::fread('~/swaruplab/smorabit/data/ADDS_2021/visium/Dec_13_2021/spaceranger_count/Human1/outs/filtered_feature_bc_matrix/features.tsv.gz') %>% as.data.frame()
+
+vis_gene_table <- vis_gene_table[,1:2]
+colnames(vis_gene_table) <- c('gene_id', 'gene_name')
+
+# human ADDS + AD snRNA-seq
+seurat_obj <- readRDS(file="/dfs7/swaruplab/smorabit/analysis/ADDS_2021/splitseq/integration/data/ADDS_AD_integrated.rds" )
+
+
+```
+
+Figure out which visium samples are in the 
+
+```{r eval=FALSE}
+
+head(seurat_human@meta.data)
+seurat_human$Slide 
+
+seurat_human$ID <- paste0(as.character(seurat_human$Slide), '_', as.character(seurat_human$CaptureArea))
+
+tiff_sample <- 'V10D07-125_D1'
+tiff_sample %in% unique(seurat_human$ID)
+
+cur_seurat_meta <- subset(seurat_human@meta.data, ID == tiff_sample)
+
+
+sample_meta <- read.csv(meta_file, stringsAsFactors=FALSE)
+
+p1 <- cur_seurat_meta %>% 
+  ggplot(aes(x=imagecol, y=-imagerow, color=annotation)) + 
+  geom_point() + 
+  coord_fixed()
+
+pdf(paste0(fig_dir, 'test_spatial_anno.pdf'), width=7, height=7)
+p
+dev.off()
+
+
+
+
+
+
+
+head(seurat_human@meta.data)
+seurat_human$Slide 
+
+seurat_5x$ID <- paste0(as.character(seurat_5x$SlideSerial), '_', as.character(seurat_5x$CaptureArea))
+
+tiff_sample <- 'V11A13-399_A1'
+tiff_sample %in% unique(seurat_5x$ID)
+
+cur_seurat_meta <- subset(seurat_5x@meta.data, ID == tiff_sample)
+
+
+sample_meta <- read.csv(meta_file, stringsAsFactors=FALSE)
+
+p1 <- cur_seurat_meta %>% 
+  ggplot(aes(x=imagecol, y=-imagerow, color=annotation)) + 
+  geom_point() + 
+  coord_fixed()
+
+pdf(paste0(fig_dir, 'test_spatial_anno.pdf'), width=7, height=7)
+p
+dev.off()
+
+
+# add metadata:
+meta_file <- "/dfs7/swaruplab/smorabit/data/Visium_Mouse_2021/Nov_24_2021/visium_5xFAD_11-24-21_sample_meta.csv"
+
+sample_meta <- read.csv(meta_file, stringsAsFactors=FALSE)
+
+
+
+```
+
+
+Make plots for vivek's grant
+
+```{r eval=FALSE}
+
+
+
+
+
+
+
+human_genes = c(
+  'APP', 'BIN1', 'TREM2', 'MAPT',
+  'CLU', 'GFAP', 'ACTB', 'VIM', 'NEAT1', 'ERBIN',
+  'PLP1', 'SOX2', 'QKI', 'MBP', 'MOBP',
+  )
+mouse_genes = c('App', 'Bin1', 'Trem2', 'Mapt')
+
+# representative samples
+human_rep_samples <- c(
+  'Dec_13_2021_Human5', 'Dec_20_2021_Human1',
+  'Dec_13_2021_Human6', 'Oct_2021_6',
+  'Dec_13_2021_Human3', 'Dec_13_2021_Human7',
+  'Nov_24_2021_VisiumHuman_12', 'Dec_13_2021_Human8'
+)
+
+
+for(feat in human_genes){
+
+  p <- SampleFeaturePlot(
+    seurat_human,
+    feature=feat,
+    sample_labels = c("Diagnosis", "Sex", 'Age'),
+    samples_to_plot = human_rep_samples,
+    ncol = 10,
+    raster=TRUE,
+    plot_max = 'q99',
+    plot_min = 0.25,
+    colfunc = inferno,
+    rev_colors=TRUE,
+    dpi=800,
+    combine=FALSE
+  )
+
+  p <- lapply(p, function(x){
+    x + theme(
+      plot.title = element_text(face='bold', size=12, vjust=-1),
+      plot.margin = margin(0,0,0,0)
+    ) + labs(fill = feat)
+
+  })
+
+  patch <- wrap_plots(p, ncol=4, widths=1, heights=1) + plot_layout(guides='collect')
+
+  pdf(paste0(fig_dir, 'vivek_grant_feb2023/human_featureplot_', feat, '.pdf'), width=12, height=6)
+  print(patch)
+  dev.off()
+
+}
+
+
+for(feat in mouse_genes){
+
+  p <- SampleFeaturePlot(
+    seurat_5x,
+    feature=feat,
+    sample_labels = c("Condition", 'Age', 'Sex'),
+    samples_to_plot = mouse_rep_samples,
+    sample_col = "SAMPLE",
+    ncol = 10,
+    raster=TRUE,
+    plot_max = 'q99',
+    plot_min = 0.25,
+    colfunc = inferno,
+    rev_colors=TRUE,
+    dpi=800,
+    combine=FALSE
+  )
+
+  p <- lapply(p, function(x){
+    x + theme(
+      plot.title = element_text(face='bold', size=12, vjust=-1),
+      plot.margin = margin(0,0,0,0)
+    ) + labs(fill = feat)
+
+  })
+
+  patch <- wrap_plots(p, ncol=4, widths=1, heights=1) + plot_layout(guides='collect')
+
+  pdf(paste0(fig_dir, 'vivek_grant_feb2023/mouse_featureplot_', feat, '.pdf'), width=12, height=6)
+  print(patch)
+  dev.off()
+
+}
+
+# representative samples ordered by age
+rep_samples_5x <- c('675', '421', '784', '314')
+rep_samples_WT <- c('242', '721', '343', '313')
+mouse_rep_samples <- c(rep_samples_5x, rep_samples_WT)
+
+
+```
+
+
+Check out loading Emily's seurat objects compared to mine:
+
+```{r eval=FALSE}
+
+# seurat objets
+
+seurat_emily_human <- readRDS('/dfs7/swaruplab/emiyoshi/Visium_ADDS/ADDS_seurat_processed_amyloid.rds')
+seurat_emily_5x <- readRDS('/dfs7/swaruplab/emiyoshi/Visium_5X/5XFAD_seurat_processed_amyloid.rds')
+
+################################################################################
+# combine 5x vs WT DEGs into one table:
+################################################################################
+
+deg_dir <- '/dfs7/swaruplab/smorabit/analysis/ADDS_2021/visium/5xFAD/DEGs/condition/'
+deg_files <- dir(deg_dir)[grepl('.csv', dir(deg_dir))]
+
+# combine  all tests into one table:
+combined <- Reduce(rbind, lapply(deg_files, function(file){
+  read.csv(paste0(deg_dir, file))
+}))
+
+write.csv(combined, file=paste0('/dfs7/swaruplab/smorabit/analysis/ADDS_2021/visium/5xFAD/DEGs/data/5xFAD_vs_control_degs_visium.csv'), quote=FALSE, row.names=FALSE)
+
+################################################################################
+# combine human DEGs into one table:
+################################################################################
+
+deg_dir <- '/dfs7/swaruplab/smorabit/analysis/ADDS_2021/visium/human/DEGs/condition/'
+deg_files <- dir(deg_dir)[grepl('.csv', dir(deg_dir))]
+
+# combine  all tests into one table:
+combined <- Reduce(rbind, lapply(deg_files, function(file){
+  read.csv(paste0(deg_dir, file))
+}))
+
+write.csv(combined, file=paste0('/dfs7/swaruplab/smorabit/analysis/ADDS_2021/visium/5xFAD/DEGs/data/5xFAD_vs_control_degs_visium.csv'), quote=FALSE, row.names=FALSE)
+
+
+```
+
+Fix names in visium cluster marker genes:
+
+```{r eval=FALSE}
+
+################################################################################
+# human
+################################################################################
+
+cluster_markers <- read.csv('/dfs7/swaruplab/smorabit/analysis/ADDS_2021/visium/human/DEGs/data/cluster_markers_9.csv')
+
+# re-name from cluster number to annotation:
+cluster_df <- seurat_human@meta.data[,c('bs.q9', 'annotation')] %>% distinct()
+
+ix <- match(cluster_markers$group, cluster_df$bs.q9)
+cluster_markers$group <- cluster_df$annotation[ix]
+
+write.csv(cluster_markers, file=paste0('/dfs7/swaruplab/smorabit/analysis/ADDS_2021/visium/human/DEGs/data/human_visium_cluster_markers.csv'), quote=FALSE, row.names=FALSE)
+
+
+################################################################################
+# mouse
+################################################################################
+
+
+deg_dir <- '/dfs7/swaruplab/smorabit/analysis/ADDS_2021/visium/5xFAD/DEGs/cluster_markers/'
+deg_files <- dir(deg_dir)[grepl('.csv', dir(deg_dir))]
+
+combined <- Reduce(rbind, lapply(deg_files, function(file){
+  read.csv(paste0(deg_dir, file))
+}))
+
+write.csv(combined, file=paste0('/dfs7/swaruplab/smorabit/analysis/ADDS_2021/visium/5xFAD/DEGs/data/cluster_markers.csv'), quote=FALSE, row.names=FALSE)
+
+cluster_markers <- read.csv('/dfs7/swaruplab/smorabit/analysis/ADDS_2021/visium/5xFAD/DEGs/data/cluster_markers.csv')
+
+# re-name from cluster number to annotation:
+cluster_df <- seurat_5x@meta.data[,c('bs.q15', 'annotation')] %>% distinct()
+
+ix <- match(cluster_markers$group, cluster_df$bs.q15)
+cluster_markers$group <- cluster_df$annotation[ix]
+
+write.csv(cluster_markers, file=paste0('/dfs7/swaruplab/smorabit/analysis/ADDS_2021/visium/5xFAD/DEGs/data/5xFAD_visium_cluster_markers.csv'), quote=FALSE, row.names=FALSE)
+
+
+
+
+```
+
+For human visium, compute WM and GM subcluster markers:
+
+```{r eval=FALSE}
+
+seurat_test <- subset(seurat_human, !(annotation %in% c('WM1', 'WM2', 'WM3')))
+
+```
+
+
+Cluster marker gene heatmaps for human and mouse datasets:
+
+```{r eval=FALSE}
+
+
+################################################################################
+# load human data
+################################################################################
+
+degs <- read.csv('/dfs7/swaruplab/smorabit/analysis/ADDS_2021/visium/human/DEGs/data/human_visium_cluster_markers.csv')
+degs$group <- factor(
+  as.character(degs$group),
+  levels = levels(seurat_human$annotation)
+)
+
+# exclude MT genes:
+degs <- degs[!grepl('MT-', degs$gene),]
+
+n_degs <- 25
+plot_genes <- degs %>%
+  arrange(group) %>%
+  subset(p_val_adj <= 0.05) %>%
+  group_by(group) %>%
+  top_n(n_degs, wt=avg_log2FC)  %>%
+  .$gene
+
+# scale genes:
+seurat_human <- ScaleData(seurat_human, features=plot_genes)
+
+
+# set random seed
+set.seed(42)
+
+seurat_human$barcode <- colnames(seurat_human)
+temp <- table(seurat_human@meta.data$annotation)
+
+df <- data.frame()
+for(i in 1:length(temp)){
+
+  if(temp[[i]] < 2000){
+    cur_df <- seurat_human@meta.data %>% subset(annotation == names(temp)[i])
+  } else{
+    cur_df <- seurat_human@meta.data %>% subset(annotation == names(temp)[i]) %>% sample_n(2000)
+  }
+  df <- rbind(df, cur_df)
+}
+
+p <- DoHeatmap(
+  seurat_human %>% subset(barcode %in% df$barcode),
+  features=unlist(plot_genes),
+  group.by='annotation',
+  group.colors = human_cp,
+  raster=TRUE, slot='scale.data'
+) + theme(
+  axis.text.y = element_text(face='italic', size=3)
+)
+
+pdf(paste0(fig_dir, 'marker_gene_heatmap_human_visium.pdf'), width=6, height=8, useDingbats=FALSE)
+p
+dev.off()
+
+
+
+################################################################################
+# load mouse data
+################################################################################
+
+degs <- read.csv('/dfs7/swaruplab/smorabit/analysis/ADDS_2021/visium/5xFAD/DEGs/data/5xFAD_visium_cluster_markers.csv')
+degs$group <- factor(
+  as.character(degs$group),
+  levels = levels(seurat_5x$annotation)
+)
+
+# exclude MT genes:
+degs <- degs[!grepl('mt-', degs$gene),]
+
+# exclude unknown cluster:
+degs <- subset(degs, group != 'unknown')
+
+n_degs <- 10
+plot_genes <- degs %>%
+  arrange(group) %>%
+  subset(p_val_adj <= 0.05) %>%
+  group_by(group) %>%
+  top_n(n_degs, wt=avg_log2FC)  %>%
+  .$gene
+
+# scale genes:
+seurat_5x <- ScaleData(seurat_5x, features=plot_genes)
+
+
+# set random seed
+set.seed(42)
+
+seurat_5x$barcode <- colnames(seurat_5x)
+temp <- table(seurat_5x@meta.data$annotation)
+
+df <- data.frame()
+for(i in 1:length(temp)){
+
+  if(temp[[i]] < 1000){
+    cur_df <- seurat_5x@meta.data %>% subset(annotation == names(temp)[i])
+  } else{
+    cur_df <- seurat_5x@meta.data %>% subset(annotation == names(temp)[i]) %>% sample_n(1000)
+  }
+  df <- rbind(df, cur_df)
+}
+
+p <- DoHeatmap(
+  seurat_5x %>% subset(barcode %in% df$barcode & annotation != 'unknown'),
+  features=unlist(plot_genes),
+  group.by='annotation',
+  group.colors = mouse_cp,
+  raster=TRUE, slot='scale.data'
+) + theme(
+  axis.text.y = element_text(face='italic', size=3)
+)
+
+pdf(paste0(fig_dir, 'marker_gene_heatmap_5xFAD_visium.pdf'), width=12, height=8, useDingbats=FALSE)
+p
+dev.off()
+
+
+
+```
+
+
+DEG heatmap ordered by chromosome:
+
+```{r eval=FALSE}
+
+
+#  cur_test <- 'DS_ct_PCC'; gene_table <- sp_gene_table
+cur_test <- 'DSAD'; degs <- degs_adds
+cur_test <- 'EAD'; degs <- degs_ead
+cur_test <- 'LAD'; degs <- degs_lad
+
+# set factor levels:
+degs$group <- factor(
+  as.character(degs$group),
+  levels = rev(names(human_cp))
+)
+
+
+# logfc_thresh <- 0.5
+logfc_thresh <- 0.25
+
+# plot chromosome heatmap
+color_df <- data.frame(
+  colour = as.character(human_cp),
+  group = names(human_cp)
+)
+color_df$group <- factor(
+  as.character(color_df$group),
+    levels=levels(degs$group)
+)
+color_df <- arrange(color_df, group)
+
+p <- PlotDEGsChromosome(
+  degs,
+  gene_table = vis_gene_table,
+  EnsDb = EnsDb.Hsapiens.v86,
+  chr_names = c(as.character(1:22), 'X'),
+  raster_dpi=800,
+  logfc_thresh = logfc_thresh,
+  plot_limit=1,
+  color_df = color_df
+)
+
+
+pdf(paste0(fig_dir, 'manheatmap_', cur_test, '_', as.character(logfc_thresh), 'FC.pdf'), width=12, height=5)
+p
+dev.off()
+
+################################################################################
+# plot the number of DEGs per chromosome
+################################################################################
+
+chr_names <- c(as.character(1:22), 'X')
+
+chr_degs <- PlotDEGsChromosome(
+  degs,
+  gene_table = vis_gene_table,
+  EnsDb = EnsDb.Hsapiens.v86,
+  chr_names = chr_names,
+  raster_dpi=800,
+  logfc_thresh = logfc_thresh,
+  plot_limit=1,
+  color_df = color_df,
+  return_table=TRUE
+)
+
+# set factor levels
+chr_degs$chr <- factor(
+  as.character(chr_degs$chr),
+  levels = chr_names
+)
+
+# get the number of genes on each chromosome:
+n_genes_chr <- table(seqnames(ensembldb::genes(EnsDb.Hsapiens.v86, filter = ~ gene_biotype == "protein_coding")))
+n_genes_chr <- ngenes_chr[chr_names]
+
+# up-regulated:
+chr_up <- subset(chr_degs, avg_log2FC > 0.25 & p_val_adj < 0.05)
+n_degs_up <- table(chr_up$group, chr_up$chr)
+percent_degs_up <- t(apply(n_degs_up, 1, '/', n_genes_chr))
+df_up <- reshape2::melt(n_degs_up) %>% dplyr::rename(c(group = Var1, chr = Var2))
+df_up$direction <- 1
+
+# down-regulated:
+chr_down <- subset(chr_degs, avg_log2FC < -0.25 & p_val_adj < 0.05)
+n_degs_down <- table(chr_down$group, chr_down$chr)
+percent_degs_down <- t(apply(n_degs_down, 1, '/', n_genes_chr))
+df_down <- reshape2::melt(n_degs_down) %>% dplyr::rename(c(group = Var1, chr = Var2))
+df_down$direction <- -1
+
+plot_df <- rbind(df_up, df_down)
+plot_df$value <- plot_df$value * plot_df$direction
+
+# try making a plot:
+p <- plot_df %>%
+  ggplot(aes(fill = group, y = value, x = chr)) +
+  geom_bar(position='stack', stat='identity') +
+  geom_hline(yintercept=0, color='black') +
+  scale_fill_manual(values=human_cp) +
+  xlab('Chromosome') +
+  ylab(expression(N[DEGs]))
+
+
+pdf(paste0(fig_dir, 'ndegs_chromosome_', cur_test, '_visium.pdf'), width=8, height=3)
+p
+dev.off()
+
+
+```
+
+
+Correlation between logFC in Late-AD & ADDS
+
+```{r eval=FALSE}
+
+library(RRHO)
+library(viridis)
+library(ggpubr)
+
+# plot settings
+groups <- unique(degs_lad$group)
+plot_list <- list()
+rrho_plot_list <- list()
+cor_list <- c()
+signif_only <- TRUE
+run_rrho <- FALSE
+rrho_maxval <- 750
+
+# run loop over each group
+# initialize progress bar
+pb <- utils::txtProgressBar(min = 0, max = length(groups), style = 3, width = 50, char = "=")
+counter <- 1
+
+
+for(cur_group in groups){
+  print(cur_group)
+  setTxtProgressBar(pb, counter)
+
+
+  cur_degs_ad <- subset(degs_lad, group == cur_group)
+  cur_degs_adds <- subset(degs_adds, group == cur_group)
+
+  genes.keep <- intersect(cur_degs_ad$gene, cur_degs_adds$gene)
+  cur_degs_ad <- subset(cur_degs_ad, gene %in% genes.keep)
+  cur_degs_adds <- subset(cur_degs_adds, gene %in% genes.keep)
+
+  # make sure they are in the same order:
+  rownames(cur_degs_ad) <- cur_degs_ad$gene
+  rownames(cur_degs_adds) <- cur_degs_adds$gene
+  cur_degs_adds <- cur_degs_adds[cur_degs_ad$gene,]
+
+  # join the two dataframes
+  plot_df <- dplyr::inner_join(cur_degs_ad, cur_degs_adds, by = 'gene')
+
+  logfc_thresh <- 0.05
+
+  #
+  plot_df$group <- ifelse(plot_df$avg_log2FC.x >= logfc_thresh & plot_df$avg_log2FC.y >= logfc_thresh, "Consistent", "")
+  plot_df$group <- ifelse(plot_df$avg_log2FC.x <= -logfc_thresh & plot_df$avg_log2FC.y <= -logfc_thresh, "Consistent", plot_df$group)
+  plot_df$group <- ifelse(plot_df$avg_log2FC.x >= logfc_thresh & plot_df$avg_log2FC.y <= -logfc_thresh, "Inconsistent", plot_df$group)
+  plot_df$group <- ifelse(plot_df$avg_log2FC.x <= -logfc_thresh & plot_df$avg_log2FC.y >= logfc_thresh, "Inconsistent", plot_df$group)
+  group_colors <- c('grey', 'blue', 'yellow')
+
+  if(signif_only){
+    plot_df <- subset(plot_df, p_val_adj.x < 0.05 | p_val_adj.y < 0.05)
+    if(nrow(plot_df) == 0){next}
+  }
+
+  cur_cor <-  cor(x=as.numeric(plot_df$avg_log2FC.x), y=as.numeric(plot_df$avg_log2FC.y))
+  cor_list <- c(cor_list, cur_cor)
+  print(table(plot_df$group))
+  print(dim(plot_df))
+
+  plot_range <- max(max(plot_df$avg_log2FC.x), max(plot_df$avg_log2FC.y))
+  p <- plot_df %>%
+    ggplot(aes(x = avg_log2FC.x, y = avg_log2FC.y, color=group)) +
+    geom_hline(yintercept = 0, linetype='dashed', color='grey') +
+    geom_vline(xintercept = 0, linetype='dashed', color='grey') +
+    ggrastr::rasterise(geom_point(), dpi=500) +
+    scale_color_manual(values=group_colors) +
+    geom_smooth(inherit.aes=FALSE, data=plot_df, mapping = aes(x = avg_log2FC.x, y = avg_log2FC.y), method='lm', color='black') +
+    stat_cor(inherit.aes=FALSE, data=plot_df, mapping = aes(x = avg_log2FC.x, y = avg_log2FC.y), method='pearson') +
+    xlim(c(-plot_range, plot_range)) +
+    ylim(c(-plot_range, plot_range)) +
+    theme(
+      axis.line.x = element_blank(),
+      axis.line.y = element_blank(),
+      panel.border = element_rect(colour = "black", fill=NA, size=1),
+      plot.title = element_text(hjust=0.5)
+    ) +
+    coord_fixed(ratio=1) + NoLegend() +
+    xlab(bquote("LAD Average log"[2]~"(Fold Change)")) +
+    ylab(bquote("ADDS Average log"[2]~"(Fold Change)")) +
+    ggtitle(cur_group)
+    #annotate("text", label=paste0("N=",sum(plot_df$group == 'Consistent')), x=-plot_range + 0.2, y=-plot_range+0.2, color='blue')
+
+  plot_list[[cur_group]] <- p
+
+  if(run_rrho){
+
+
+    # set up gene lists
+    gl1 <- plot_df[,c('gene', 'avg_log2FC.x')]
+    gl2 <- plot_df[,c('gene', 'avg_log2FC.y')]
+
+    # run rrho
+    test <- RRHO(gl1, gl2, alternative='enrichment', BY=TRUE)
+    overlap_df <- reshape2::melt(test$hypermat.by)
+
+    # fix values that are infinite:
+    max_val <- subset(overlap_df, value != Inf) %>% .$value %>% max
+    overlap_df$value <- ifelse(overlap_df$value > max_val, max_val, overlap_df$value)
+    overlap_df$value <- ifelse(overlap_df$value > rrho_maxval, rrho_maxval, overlap_df$value)
+
+    # plot rrho heatmap
+    p <- ggplot(overlap_df, aes(x=Var1, y=Var2, fill=value, color=value)) +
+      ggrastr::rasterise(geom_tile(), dpi=500) +
+      scale_fill_gradientn(colors=magma(256), limits=c(0, rrho_maxval)) +
+      scale_color_gradientn(colors=magma(256), limits=c(0, rrho_maxval)) +
+      theme(
+        plot.title=element_text(hjust=0.5),
+        axis.line=element_blank(),
+        axis.ticks=element_blank(),
+        axis.text.x = element_blank(),
+        axis.text.y = element_blank(),
+        axis.title = element_blank(),
+        plot.margin=margin(0,0,0,0)
+      ) + coord_equal() + ggtitle(cur_group)
+
+    rrho_plot_list[[cur_group]] <- p
+
+  }
+
+  # update progress bar
+  counter <- counter+1
+}
+
+# close progress bar
+close(pb)
+
+names(cor_list) <- names(plot_list)
+plot_list <- plot_list[rev(order(cor_list))]
+rrho_plot_list <- rrho_plot_list[rev(order(cor_list))]
+
+plot_list <- lapply(plot_list, function(x){
+  x + theme(
+    axis.title.x = element_blank(),
+    axis.title.y = element_blank(),
+    plot.margin = margin(0,0,0,0),
+  )
+})
+
+pdf(paste0(fig_dir, 'deg_corr_combined_LAD_ST.pdf'), width=9, height=9)
+wrap_plots(plot_list, ncol=3)
+dev.off()
+
+pdf(paste0(fig_dir, 'deg_corr_combined_LAD_ST2.pdf'), width=6, height=6)
+wrap_plots(plot_list[groups], ncol=3)
+dev.off()
+
+pdf(paste0(fig_dir, 'deg_rrho_combined_ST.pdf'), width=8, height=8)
+wrap_plots(rrho_plot_list, ncol=3) + plot_layout(guides='collect')
+dev.off()
+
+
+```
+
+
+Correlation between logFC in early-AD & ADDS
+
+```{r eval=FALSE}
+
+library(viridis)
+library(ggpubr)
+
+# plot settings
+groups <- unique(degs_lad$group)
+plot_list <- list()
+rrho_plot_list <- list()
+cor_list <- c()
+signif_only <- TRUE
+
+
+# run loop over each group
+# initialize progress bar
+pb <- utils::txtProgressBar(min = 0, max = length(groups), style = 3, width = 50, char = "=")
+counter <- 1
+
+
+for(cur_group in groups){
+  print(cur_group)
+  setTxtProgressBar(pb, counter)
+
+
+  cur_degs_ad <- subset(degs_ead, group == cur_group)
+  cur_degs_adds <- subset(degs_adds, group == cur_group)
+
+  genes.keep <- intersect(cur_degs_ad$gene, cur_degs_adds$gene)
+  cur_degs_ad <- subset(cur_degs_ad, gene %in% genes.keep)
+  cur_degs_adds <- subset(cur_degs_adds, gene %in% genes.keep)
+
+  # make sure they are in the same order:
+  rownames(cur_degs_ad) <- cur_degs_ad$gene
+  rownames(cur_degs_adds) <- cur_degs_adds$gene
+  cur_degs_adds <- cur_degs_adds[cur_degs_ad$gene,]
+
+  # join the two dataframes
+  plot_df <- dplyr::inner_join(cur_degs_ad, cur_degs_adds, by = 'gene')
+
+  logfc_thresh <- 0.05
+
+  #
+  plot_df$group <- ifelse(plot_df$avg_log2FC.x >= logfc_thresh & plot_df$avg_log2FC.y >= logfc_thresh, "Consistent", "")
+  plot_df$group <- ifelse(plot_df$avg_log2FC.x <= -logfc_thresh & plot_df$avg_log2FC.y <= -logfc_thresh, "Consistent", plot_df$group)
+  plot_df$group <- ifelse(plot_df$avg_log2FC.x >= logfc_thresh & plot_df$avg_log2FC.y <= -logfc_thresh, "Inconsistent", plot_df$group)
+  plot_df$group <- ifelse(plot_df$avg_log2FC.x <= -logfc_thresh & plot_df$avg_log2FC.y >= logfc_thresh, "Inconsistent", plot_df$group)
+  group_colors <- c('grey', 'blue', 'yellow')
+
+  if(signif_only){
+    plot_df <- subset(plot_df, p_val_adj.x < 0.05 | p_val_adj.y < 0.05)
+    if(nrow(plot_df) == 0){next}
+  }
+
+  cur_cor <-  cor(x=as.numeric(plot_df$avg_log2FC.x), y=as.numeric(plot_df$avg_log2FC.y))
+  cor_list <- c(cor_list, cur_cor)
+  print(table(plot_df$group))
+  print(dim(plot_df))
+
+  plot_range <- max(max(plot_df$avg_log2FC.x), max(plot_df$avg_log2FC.y))
+  p <- plot_df %>%
+    ggplot(aes(x = avg_log2FC.x, y = avg_log2FC.y, color=group)) +
+    geom_hline(yintercept = 0, linetype='dashed', color='grey') +
+    geom_vline(xintercept = 0, linetype='dashed', color='grey') +
+    ggrastr::rasterise(geom_point(), dpi=500) +
+    scale_color_manual(values=group_colors) +
+    geom_smooth(inherit.aes=FALSE, data=plot_df, mapping = aes(x = avg_log2FC.x, y = avg_log2FC.y), method='lm', color='black') +
+    stat_cor(inherit.aes=FALSE, data=plot_df, mapping = aes(x = avg_log2FC.x, y = avg_log2FC.y), method='pearson') +
+    xlim(c(-plot_range, plot_range)) +
+    ylim(c(-plot_range, plot_range)) +
+    theme(
+      axis.line.x = element_blank(),
+      axis.line.y = element_blank(),
+      panel.border = element_rect(colour = "black", fill=NA, size=1),
+      plot.title = element_text(hjust=0.5)
+    ) +
+    coord_fixed(ratio=1) + NoLegend() +
+    xlab(bquote("EAD Average log"[2]~"(Fold Change)")) +
+    ylab(bquote("ADDS Average log"[2]~"(Fold Change)")) +
+    ggtitle(cur_group)
+    #annotate("text", label=paste0("N=",sum(plot_df$group == 'Consistent')), x=-plot_range + 0.2, y=-plot_range+0.2, color='blue')
+
+  plot_list[[cur_group]] <- p
+
+  # update progress bar
+  counter <- counter+1
+}
+
+# close progress bar
+close(pb)
+
+
+names(cor_list) <- names(plot_list)
+plot_list <- plot_list[rev(order(cor_list))]
+
+plot_list <- lapply(plot_list, function(x){
+  x + theme(
+    axis.title.x = element_blank(),
+    axis.title.y = element_blank(),
+    plot.margin = margin(0,0,0,0),
+    plot.title = element_text(vjust=-0.2)
+  )
+})
+
+pdf(paste0(fig_dir, 'deg_corr_combined_EAD_ST.pdf'), width=9, height=9)
+wrap_plots(plot_list, ncol=3)
+dev.off()
+
+pdf(paste0(fig_dir, 'deg_corr_combined_EAD_ST2.pdf'), width=6, height=6)
+wrap_plots(plot_list[groups], ncol=3)
+dev.off()
+
+
+tmp1 <- subset(degs_adds, group == 'WM1' & p_val_adj < 0.05 & avg_log2FC > 0)
+tmp2 <- subset(degs_lad, group == 'WM1' & p_val_adj < 0.05 & avg_log2FC > 0)
+
+intersect(tmp1$gene, tmp2$gene)
+
+```
+
+
+Correlation between logFC in early-AD & late-AD
+
+```{r eval=FALSE}
+
+library(viridis)
+library(ggpubr)
+
+# plot settings
+groups <- unique(degs_lad$group)
+plot_list <- list()
+rrho_plot_list <- list()
+cor_list <- c()
+signif_only <- TRUE
+
+
+# run loop over each group
+# initialize progress bar
+pb <- utils::txtProgressBar(min = 0, max = length(groups), style = 3, width = 50, char = "=")
+counter <- 1
+
+
+for(cur_group in groups){
+  print(cur_group)
+  setTxtProgressBar(pb, counter)
+
+
+  cur_degs_ad <- subset(degs_ead, group == cur_group)
+  cur_degs_adds <- subset(degs_lad, group == cur_group)
+
+  genes.keep <- intersect(cur_degs_ad$gene, cur_degs_adds$gene)
+  cur_degs_ad <- subset(cur_degs_ad, gene %in% genes.keep)
+  cur_degs_adds <- subset(cur_degs_adds, gene %in% genes.keep)
+
+  # make sure they are in the same order:
+  rownames(cur_degs_ad) <- cur_degs_ad$gene
+  rownames(cur_degs_adds) <- cur_degs_adds$gene
+  cur_degs_adds <- cur_degs_adds[cur_degs_ad$gene,]
+
+  # join the two dataframes
+  plot_df <- dplyr::inner_join(cur_degs_ad, cur_degs_adds, by = 'gene')
+
+  logfc_thresh <- 0.05
+
+  #
+  plot_df$group <- ifelse(plot_df$avg_log2FC.x >= logfc_thresh & plot_df$avg_log2FC.y >= logfc_thresh, "Consistent", "")
+  plot_df$group <- ifelse(plot_df$avg_log2FC.x <= -logfc_thresh & plot_df$avg_log2FC.y <= -logfc_thresh, "Consistent", plot_df$group)
+  plot_df$group <- ifelse(plot_df$avg_log2FC.x >= logfc_thresh & plot_df$avg_log2FC.y <= -logfc_thresh, "Inconsistent", plot_df$group)
+  plot_df$group <- ifelse(plot_df$avg_log2FC.x <= -logfc_thresh & plot_df$avg_log2FC.y >= logfc_thresh, "Inconsistent", plot_df$group)
+  group_colors <- c('grey', 'blue', 'yellow')
+
+  if(signif_only){
+    plot_df <- subset(plot_df, p_val_adj.x < 0.05 | p_val_adj.y < 0.05)
+    if(nrow(plot_df) == 0){next}
+  }
+
+  cur_cor <-  cor(x=as.numeric(plot_df$avg_log2FC.x), y=as.numeric(plot_df$avg_log2FC.y))
+  cor_list <- c(cor_list, cur_cor)
+  print(table(plot_df$group))
+  print(dim(plot_df))
+
+  plot_range <- max(max(plot_df$avg_log2FC.x), max(plot_df$avg_log2FC.y))
+  p <- plot_df %>%
+    ggplot(aes(x = avg_log2FC.x, y = avg_log2FC.y, color=group)) +
+    geom_hline(yintercept = 0, linetype='dashed', color='grey') +
+    geom_vline(xintercept = 0, linetype='dashed', color='grey') +
+    ggrastr::rasterise(geom_point(), dpi=500) +
+    scale_color_manual(values=group_colors) +
+    geom_smooth(inherit.aes=FALSE, data=plot_df, mapping = aes(x = avg_log2FC.x, y = avg_log2FC.y), method='lm', color='black') +
+    stat_cor(inherit.aes=FALSE, data=plot_df, mapping = aes(x = avg_log2FC.x, y = avg_log2FC.y), method='pearson') +
+    xlim(c(-plot_range, plot_range)) +
+    ylim(c(-plot_range, plot_range)) +
+    theme(
+      axis.line.x = element_blank(),
+      axis.line.y = element_blank(),
+      panel.border = element_rect(colour = "black", fill=NA, size=1),
+      plot.title = element_text(hjust=0.5)
+    ) +
+    coord_fixed(ratio=1) + NoLegend() +
+    xlab(bquote("EAD Average log"[2]~"(Fold Change)")) +
+    ylab(bquote("LAD Average log"[2]~"(Fold Change)")) +
+    ggtitle(cur_group)
+    #annotate("text", label=paste0("N=",sum(plot_df$group == 'Consistent')), x=-plot_range + 0.2, y=-plot_range+0.2, color='blue')
+
+  plot_list[[cur_group]] <- p
+
+  # update progress bar
+  counter <- counter+1
+}
+
+# close progress bar
+close(pb)
+
+
+names(cor_list) <- names(plot_list)
+plot_list <- plot_list[rev(order(cor_list))]
+
+plot_list <- lapply(plot_list, function(x){
+  x + theme(
+    axis.title.x = element_blank(),
+    axis.title.y = element_blank(),
+    plot.margin = margin(0,0,0,0),
+    plot.title = element_text(vjust=-0.2)
+  )
+})
+
+pdf(paste0(fig_dir, 'deg_corr_combined_EAD_vs_LAD_ST.pdf'), width=9, height=9)
+wrap_plots(plot_list, ncol=3)
+dev.off()
+
+```
+
+Volcano plots in human data:
+
+```{r eval=FALSE}
+
+library(ggrepel)
+
+cp <- c("Control" = "#B8DBC5", "earlyAD" = "#E7BDE1" , "AD" = "#CF8BA3", "AD_DS" = "#9E6D7F")
+
+# late-AD
+degs <- degs_lad; name <- 'LAD';
+color1 <- cp['AD']; color2 <- cp['Control']
+
+# early-AD
+degs <- degs_ead; name <- 'EAD';
+color1 <- cp['earlyAD']; color2 <- cp['Control']
+
+# AD/DS
+degs <- degs_adds; name <- 'ADDS';
+color1 <- cp['AD_DS']; color2 <- cp['Control']
+
+# exclude MT genes
+degs <- degs[!grepl('MT-', degs$gene),]
+
+# lowest non-zero value
+lowest <- degs %>% subset(p_val_adj != 0) %>% top_n(-1, wt=p_val_adj) %>% .$p_val_adj
+degs$p_val_adj <- ifelse(degs$p_val_adj == 0, lowest, degs$p_val_adj)
+
+nlabel <- 10
+
+# label the top and bottom significant genes by log fold change
+cur_degs <- Reduce(rbind, lapply(unique(degs$group), function(x){
+  cur <- subset(degs, group == x)
+
+  top_thresh <- cur %>% subset(p_val_adj <= 0.05 & avg_log2FC > 0) %>% top_n(nlabel, wt=avg_log2FC) %>% .$avg_log2FC %>% min
+  bottom_thresh <- cur %>% subset(p_val_adj <= 0.05 & avg_log2FC < 0) %>% top_n(-1*nlabel, wt=avg_log2FC) %>% .$avg_log2FC %>% max
+
+  cur$anno <- ifelse(cur$p_val_adj <= 0.05 & cur$avg_log2FC >= top_thresh, cur$gene, NA)
+  cur$anno <- ifelse(cur$p_val_adj <= 0.05 & cur$avg_log2FC <= bottom_thresh, cur$gene, cur$anno)
+  cur$color <- ifelse(cur$p_val_adj > 0.05, 'gray', ifelse(cur$avg_log2FC > 0, color1, color2))
+  cur
+}))
+
+groups <- unique(degs$group)
+plot_list <- list()
+for(cluster  in groups){
+
+
+  print(cluster)
+  plot_degs <- cur_degs %>% subset(group == cluster)
+
+  p <- plot_degs  %>%
+     ggplot(aes(x=avg_log2FC, y=-log10(p_val_adj))) +
+     geom_hline(yintercept=-log10(0.05), linetype='dashed')
+
+  # plot genes that are Nr4a2 targets
+  p <- p + ggrastr::rasterise(geom_point(
+    alpha=0.5,
+    color=plot_degs %>% .$color
+  ), dpi=500)
+
+  p <- p +
+     geom_point(
+       inherit.aes=FALSE,
+       data=subset(plot_degs, !is.na(anno)),
+       aes(avg_log2FC, -log10(p_val_adj)),
+       fill=subset(plot_degs, !is.na(anno)) %>% .$color,
+       shape=21, size=3, color='black'
+     ) +
+     geom_text_repel(aes(label=anno), color='black', fontface='italic',  min.segment.length=0, max.overlaps=Inf) +
+     xlim(-1*max(abs(plot_degs$avg_log2FC))-0.1, max(abs(plot_degs$avg_log2FC))+0.1) +
+     ggtitle(paste0(cluster)) +
+     xlab(bquote("Average log"[2]~"(Fold Change)")) +
+     ylab(bquote("-log"[10]~"(Adj. P-value)")) +
+     theme(
+       panel.border = element_rect(color='black', fill=NA, size=1),
+       panel.grid.major = element_blank(),
+       axis.line = element_blank(),
+       plot.title = element_text(hjust = 0.5),
+       legend.position='bottom'
+     )
+
+    plot_list[[cluster]] <- p
+
+}
+
+
+out <- paste0(fig_dir, 'volcano_', name, '_visium.pdf')
+
+plot_list <- lapply(plot_list, function(x){
+  x + theme(
+    axis.title.x = element_blank(),
+    axis.title.y = element_blank(),
+    plot.margin = margin(0,0,0,0),
+    plot.title = element_text(vjust=-0.2)
+  )
+})
+
+pdf(out, width=12, height=12, useDingbats=FALSE)
+wrap_plots(plot_list, ncol=3)
+dev.off()
+
+```
+
+
+Run EnrichR for different sets of genes for each group
+
+* Up in both
+* Up in AD only
+* Up in ADDS only
+* Down in both
+* Down in AD only
+* Down in ADDS only
+
+```{r eval=FALSE}
+
+library(enrichR)
+
+dbs <-c('GO_Biological_Process_2021','GO_Cellular_Component_2021','GO_Molecular_Function_2021', 'WikiPathway_2021_Human', 'KEGG_2021_Human')
+
+
+# load DSAD vs Control DEGs:
+degs_ad <- degs_lad
+
+# add gene_id column to both:
+ix <- match(degs_ad$gene, kb_gene_table$gene_name)
+degs_ad$gene_id <- kb_gene_table$gene_id[ix]
+
+ix <- match(degs_adds$gene, sp_gene_table$gene_name)
+degs_adds$gene_id <- sp_gene_table$gene_id[ix]
+
+# genes in both:
+genes.keep <- intersect(kb_gene_table$gene_id, sp_gene_table$gene_id)
+degs_ad <- subset(degs_ad, gene_id %in% genes.keep)
+degs_adds <- subset(degs_adds, gene_id %in% genes.keep)
+
+# plot settings
+groups <- unique(degs_ad$group)
+logfc_thresh <- 0.05
+combined_output <- data.frame()
+
+# run loop over each group
+for(cur_group in groups){
+  print(cur_group)
+
+  cur_degs_ad <- subset(degs_ad, group == cur_group)
+  cur_degs_adds <- subset(degs_adds, group == cur_group)
+
+  # make sure they are in the same order:
+  rownames(cur_degs_ad) <- cur_degs_ad$gene
+  rownames(cur_degs_adds) <- cur_degs_adds$gene
+  cur_degs_adds <- cur_degs_adds[cur_degs_ad$gene,]
+
+  # get gene sets for enrichr:
+  up_ad <- cur_degs_ad %>% subset(avg_log2FC >= logfc_thresh & p_val_adj < 0.05) %>% .$gene
+  down_ad <- cur_degs_ad %>% subset(avg_log2FC <= -logfc_thresh & p_val_adj < 0.05) %>% .$gene
+  up_adds <- cur_degs_adds %>% subset(avg_log2FC >= logfc_thresh & p_val_adj < 0.05) %>% .$gene
+  down_adds <- cur_degs_adds %>% subset(avg_log2FC <= -logfc_thresh & p_val_adj < 0.05) %>% .$gene
+
+  # list of inputs to enrichr
+  input_list <- list(
+    up_ad = up_ad[!(up_ad %in% up_adds)],
+    down_ad = down_ad[!(down_ad %in% down_adds)],
+    up_adds = up_adds[!(up_adds %in% up_ad)],
+    down_adds = down_adds[!(down_adds %in% down_ad)],
+    up_both = intersect(up_ad, up_adds),
+    down_both = intersect(down_ad, down_adds),
+    up_ad_down_adds = intersect(up_ad, down_adds),
+    up_adds_down_ad = intersect(up_adds, down_ad)
+  )
+
+  # size of lists
+  lapply(input_list, function(x){
+    print(length(x))
+  })
+
+
+  # run enrichr and combine outputs
+  enriched_df <- do.call(rbind, lapply(names(input_list), function(x){
+    if(length(input_list[[x]]) > 0){
+      cur_enrich <- enrichr(input_list[[x]], dbs)
+    } else{return(data.frame())}
+    cur_df <- do.call(rbind, lapply(dbs, function(cur_db){
+      df <- cur_enrich[[cur_db]]
+      if(nrow(df) > 1){df$degs <- x; df$group <- cur_group; df$db <- cur_db}
+      else{df <- data.frame()}
+      df
+    }))
+  }))
+
+  combined_output <- rbind(combined_output, enriched_df)
+
+}
+
+# write the output to a tsv
+write.table(combined_output, file=paste0(data_dir, 'Visium_LAD_ADDS_shared_distinct_GO_terms.tsv'), quote=FALSE, row.names=FALSE, sep='\t')
+
+combined_output %>%
+  subset(P.value < 0.05) %>%
+  write.table(
+    file=paste0(data_dir, 'Visium_LAD_ADDS_shared_distinct_GO_terms_signif.tsv'),
+    quote=FALSE, row.names=FALSE, sep='\t'
+  )
+
+combined_output <- read.delim(paste0(data_dir, 'Visium_LAD_ADDS_shared_distinct_GO_terms.tsv'))
+
+##################################################################
+# Plot selected GO terms shared
+##################################################################
+
+# helper function to wrap text
+wrapText <- function(x, len) {
+    sapply(x, function(y) paste(strwrap(y, len), collapse = "\n"), USE.NAMES = FALSE)
+}
+
+st_color_df <- data.frame(
+  colour = as.character(human_cp),
+  group = names(human_cp)
+)
+st_color_df$group <- factor(as.character(st_color_df$group), levels=levels(seurat_human$annotation))
+st_cp <- st_color_df$colour; names(st_cp) <- as.character(st_color_df$group)
+
+# re-load enrichr results
+combined_output <- read.delim(paste0(data_dir, 'Visium_LAD_ADDS_shared_distinct_GO_terms.tsv'), sep='\t')
+
+# compute the number of genes per term:
+combined_output$ngenes <- unlist(lapply(strsplit(combined_output$Genes, ';'), function(x){length(x)}))
+
+# load selected terms:
+selected_terms <- read.delim(paste0(data_dir, 'GO_adds_ad_shared_visium.txt'), sep='\t')
+selected_terms$group <- factor(
+  as.character(selected_terms$group),
+  levels = levels(seurat_human$annotation)
+)
+selected_terms_full <- selected_terms
+
+# up in both ADDS & AD
+name <- 'upreg'; 
+selected_terms <- subset(selected_terms_full, degs == 'up_both')
+selected_terms <- subset(combined_output, Term %in% selected_terms$Term & P.value < 0.05 & degs == 'up_both')
+colmap <- rev(magma(256))
+
+name <- 'downreg'; 
+selected_terms <- subset(selected_terms_full, degs == 'down_both')
+selected_terms <- subset(combined_output, Term %in% selected_terms$Term & P.value < 0.05 & degs == 'down_both')
+colmap <- rev(mako(256))
+
+# set max pval for plotting
+quantile(-log(selected_terms$P.value), 0.95)
+max_p <- 10
+selected_terms$logp <- -log(selected_terms$P.value)
+selected_terms$logp <- ifelse(selected_terms$logp > max_p, max_p, selected_terms$logp)
+
+
+# remove GO Term ID
+selected_terms$Term <- str_replace(selected_terms$Term, " \\s*\\([^\\)]+\\)", "")
+selected_terms$wrap <- wrapText(selected_terms$Term, 45)
+
+selected_terms <- selected_terms %>%
+  arrange(group)
+
+selected_terms$Term <- factor(
+  as.character(selected_terms$Term),
+  levels = rev(unique(as.character(selected_terms$Term)))
+)
+
+selected_terms$wrap <- factor(
+  as.character(selected_terms$wrap),
+  levels = rev(unique(as.character(selected_terms$wrap)))
+)
+
+
+# GO Term dot plot
+
+p <- selected_terms %>%
+  ggplot(aes(x = group, y = wrap, color = logp, size=log(Combined.Score))) +
+  geom_point() +
+  scale_color_stepsn(colors=colmap) +
+  #scale_x_discrete(drop=FALSE) +
+  RotatedAxis() + xlab('') + ylab('') +
+  theme(
+    axis.title.x = element_blank(),
+    axis.title.y = element_blank(),
+    panel.border = element_rect(size=1, color='black', fill=NA),
+    axis.line.x = element_blank(),
+    axis.line.y = element_blank(),
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank(),
+    plot.margin = margin(0,0,0,0),
+    panel.grid = element_line(size=0.25, color='lightgrey')
+  ) + labs(
+    color = bquote("-log"[10]~"(P)"),
+    size= bquote("log"[10]~"(Enrich)")
+  ) +
+  coord_equal()
+
+  # make the colorbar as its own heatmap
+  st_color_df$var <- 1
+  colorbar <- st_color_df %>%
+    subset(group %in% unique(selected_terms$group)) %>%
+    ggplot(aes(x=group, y=var, fill=group)) +
+    geom_tile() +
+    scale_fill_manual(values=st_cp) +
+    coord_equal() +
+    NoLegend() + RotatedAxis() +
+    theme(
+      plot.title=element_blank(),
+      axis.line=element_blank(),
+      axis.ticks.y =element_blank(),
+      axis.text.y = element_blank(),
+      axis.title = element_blank(),
+      plot.margin=margin(0,0,0,0),
+    )
+
+
+
+
+pdf(paste0(fig_dir, 'selected_GO_terms_shared_', name, '.pdf'), width=7, height=5, useDingbats=FALSE)
+p / colorbar #+ plot_layout(heights=c(20,1))
+dev.off()
+
+
+selected_terms %>% subset(group == 'L3-4-5')
+
+
+
+##################################################################
+# Plot selected GO terms distinct
+##################################################################
+
+# helper function to wrap text
+wrapText <- function(x, len) {
+    sapply(x, function(y) paste(strwrap(y, len), collapse = "\n"), USE.NAMES = FALSE)
+}
+
+st_color_df <- data.frame(
+  colour = as.character(human_cp),
+  group = names(human_cp)
+)
+st_color_df$group <- factor(as.character(st_color_df$group), levels=levels(seurat_human$annotation))
+
+# re-load enrichr results
+combined_output <- read.delim(paste0(data_dir, 'Visium_LAD_ADDS_shared_distinct_GO_terms.tsv'), sep='\t')
+combined_output$ngenes <- unlist(lapply(strsplit(combined_output$Genes, ';'), function(x){length(x)}))
+
+# load selected terms:
+selected_terms <- read.delim(paste0(data_dir, 'GO_adds_ad_distinct.txt'), sep='\t')
+selected_terms$group <- factor(
+  as.character(selected_terms$group),
+  levels = levels(seurat_human$annotation)
+)
+selected_terms_full <- selected_terms
+
+# up in ADDS 
+name <- 'up_adds'; 
+selected_terms <- subset(selected_terms_full, degs == name)
+selected_terms <- subset(combined_output, Term %in% selected_terms$Term & P.value < 0.05 & degs == name)
+colmap <- rev(magma(256))
+
+# up in  AD
+name <- 'up_ad'; 
+selected_terms <- subset(selected_terms_full, degs == name)
+selected_terms <- subset(combined_output, Term %in% selected_terms$Term & P.value < 0.05 & degs == name)
+colmap <- rev(magma(256))
+
+name <- 'down_adds'; 
+selected_terms <- subset(selected_terms_full, degs == 'down_adds')
+selected_terms <- subset(combined_output, Term %in% selected_terms$Term & P.value < 0.05 & degs == name)
+colmap <- rev(mako(256))
+
+name <- 'down_ad'; 
+selected_terms <- subset(selected_terms_full, degs == 'down_ad')
+selected_terms <- subset(combined_output, Term %in% selected_terms$Term & P.value < 0.05 & degs == name)
+colmap <- rev(mako(256))
+
+# set max pval for plotting
+quantile(-log(selected_terms$P.value), 0.95)
+max_p <- 10
+selected_terms$logp <- -log(selected_terms$P.value)
+selected_terms$logp <- ifelse(selected_terms$logp > max_p, max_p, selected_terms$logp)
+
+
+# remove GO Term ID
+selected_terms$Term <- str_replace(selected_terms$Term, " \\s*\\([^\\)]+\\)", "")
+selected_terms$wrap <- wrapText(selected_terms$Term, 45)
+
+selected_terms <- selected_terms %>%
+  arrange(group)
+
+selected_terms$Term <- factor(
+  as.character(selected_terms$Term),
+  levels = rev(unique(as.character(selected_terms$Term)))
+)
+
+selected_terms$wrap <- factor(
+  as.character(selected_terms$wrap),
+  levels = rev(unique(as.character(selected_terms$wrap)))
+)
+
+
+# GO Term dot plot
+
+p <- selected_terms %>%
+  ggplot(aes(x = group, y = wrap, color = logp, size=log(Combined.Score))) +
+  geom_point() +
+  scale_color_stepsn(colors=colmap) +
+  #scale_x_discrete(drop=FALSE) +
+  RotatedAxis() + xlab('') + ylab('') +
+  theme(
+    axis.title.x = element_blank(),
+    axis.title.y = element_blank(),
+    panel.border = element_rect(size=1, color='black', fill=NA),
+    axis.line.x = element_blank(),
+    axis.line.y = element_blank(),
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank(),
+    plot.margin = margin(0,0,0,0),
+    panel.grid = element_line(size=0.25, color='lightgrey')
+  ) + labs(
+    color = bquote("-log"[10]~"(P)"),
+    size= bquote("log"[10]~"(Enrich)")
+  ) +
+  coord_equal()
+
+  # make the colorbar as its own heatmap
+  st_color_df$var <- 1
+  colorbar <- st_color_df %>%
+    subset(group %in% unique(selected_terms$group)) %>%
+    ggplot(aes(x=group, y=var, fill=group)) +
+    geom_tile() +
+    scale_fill_manual(values=st_cp) +
+    coord_equal() +
+    NoLegend() + RotatedAxis() +
+    theme(
+      plot.title=element_blank(),
+      axis.line=element_blank(),
+      axis.ticks.y =element_blank(),
+      axis.text.y = element_blank(),
+      axis.title = element_blank(),
+      plot.margin=margin(0,0,0,0),
+    )
+
+pdf(paste0(fig_dir, 'selected_GO_terms_distinct_', name, '.pdf'), width=7, height=5, useDingbats=FALSE)
+p / colorbar #+ plot_layout(heights=c(20,1))
+dev.off()
+
+
+
+
+```
+
+
+Volcano plots in mouse:
+
+```{r eval=FALSE}
+
+library(ggrepel)
+
+# color palettes
+cp_up <- c("4 months" = "#E8C0FC", "6 months" = "#B57DD1",
+        "8 months"= "#8C64A1", "12 months" = "#643D78")
+
+cp_down <- c("4 months" = "#BDFFDC", "6 months" = "#84DBB5",
+          "8 months"= "#45BA7C", "12 months" = "#14703F")
+
+
+degs <-  read.csv(file=paste0('/dfs7/swaruplab/smorabit/analysis/ADDS_2021/visium/5xFAD/DEGs/data/5xFAD_vs_control_degs_visium.csv'))
+degs_full <- degs
+
+# 4 months
+degs <- degs_full[grepl('4', degs_full$ident1),]
+color1 <- cp_up['4 months']; color2 <- cp_down['4 months']
+name <- '4mo'
+
+# 6 months
+degs <- degs_full[grepl('6', degs_full$ident1),]
+color1 <- cp_up['6 months']; color2 <- cp_down['6 months']
+name <- '6mo'
+
+# 8 months
+degs <- degs_full[grepl('8', degs_full$ident1),]
+color1 <- cp_up['8 months']; color2 <- cp_down['8 months']
+name <- '8mo'
+
+# 12 months
+degs <- degs_full[grepl('12', degs_full$ident1),]
+color1 <- cp_up['12 months']; color2 <- cp_down['12 months']
+name <- '12mo'
+
+# exclude MT genes
+degs <- degs[!grepl('mt-', degs$gene),]
+
+# lowest non-zero value
+lowest <- degs %>% subset(p_val_adj != 0) %>% top_n(-1, wt=p_val_adj) %>% .$p_val_adj
+degs$p_val_adj <- ifelse(degs$p_val_adj == 0, lowest, degs$p_val_adj)
+
+nlabel <- 6
+
+# label the top and bottom significant genes by log fold change
+cur_degs <- Reduce(rbind, lapply(unique(degs$group), function(x){
+  cur <- subset(degs, group == x)
+
+  top_thresh <- cur %>% subset(p_val_adj <= 0.05 & avg_log2FC > 0) %>% top_n(nlabel, wt=avg_log2FC) %>% .$avg_log2FC %>% min
+  bottom_thresh <- cur %>% subset(p_val_adj <= 0.05 & avg_log2FC < 0) %>% top_n(-1*nlabel, wt=avg_log2FC) %>% .$avg_log2FC %>% max
+
+  cur$anno <- ifelse(cur$p_val_adj <= 0.05 & cur$avg_log2FC >= top_thresh, cur$gene, NA)
+  cur$anno <- ifelse(cur$p_val_adj <= 0.05 & cur$avg_log2FC <= bottom_thresh, cur$gene, cur$anno)
+  cur$color <- ifelse(cur$p_val_adj > 0.05, 'gray', ifelse(cur$avg_log2FC > 0, color1, color2))
+  cur
+}))
+
+groups <- unique(degs$group)
+groups <- names(mouse_cp)[names(mouse_cp) %in% groups]
+groups <- groups[groups != 'unknown']
+
+plot_list <- list()
+for(cluster  in groups){
+
+
+  print(cluster)
+  plot_degs <- cur_degs %>% subset(group == cluster)
+
+  p <- plot_degs  %>%
+     ggplot(aes(x=avg_log2FC, y=-log10(p_val_adj))) +
+     geom_hline(yintercept=-log10(0.05), linetype='dashed')
+
+  # plot genes that are Nr4a2 targets
+  p <- p + ggrastr::rasterise(geom_point(
+    alpha=0.5,
+    color=plot_degs %>% .$color
+  ), dpi=600)
+
+  p <- p +
+     geom_point(
+       inherit.aes=FALSE,
+       data=subset(plot_degs, !is.na(anno)),
+       aes(avg_log2FC, -log10(p_val_adj)),
+       fill=subset(plot_degs, !is.na(anno)) %>% .$color,
+       shape=21, size=3, color='black'
+     ) +
+     geom_text_repel(aes(label=anno), color='black', fontface='italic',  min.segment.length=0, max.overlaps=Inf) +
+     xlim(-1*max(abs(plot_degs$avg_log2FC))-0.1, max(abs(plot_degs$avg_log2FC))+0.1) +
+     ggtitle(paste0(cluster)) +
+     xlab(bquote("Average log"[2]~"(Fold Change)")) +
+     ylab(bquote("-log"[10]~"(Adj. P-value)")) +
+     theme(
+       panel.border = element_rect(color='black', fill=NA, size=1),
+       panel.grid.major = element_blank(),
+       axis.line = element_blank(),
+       plot.title = element_text(hjust = 0.5),
+       legend.position='bottom'
+     )
+
+    plot_list[[cluster]] <- p
+
+}
+
+
+out <- paste0(fig_dir, 'volcano_', name, '_visium_mouse.pdf')
+
+plot_list <- lapply(plot_list, function(x){
+  x + theme(
+    axis.title.x = element_blank(),
+    axis.title.y = element_blank(),
+    plot.margin = margin(0,0,0,0),
+    plot.title = element_text(vjust=-0.5)
+  )
+})
+
+
+pdf(out, width=12, height=12, useDingbats=FALSE)
+wrap_plots(plot_list, ncol=4)
+dev.off()
+
+```
+
+Look at specific marker genes 
+
+```{r eval=FALSE}
+
+# read cluster marker genes for snRNA
+markers <- read.csv(paste0('/dfs7/swaruplab/smorabit/analysis/ADDS_2021/splitseq/integration/DEGs/combined/cluster_markers.csv'))
+group_levels <- levels(seurat_obj$cell_identity)
+markers$group <- factor(as.character(markers$group), levels=group_levels)
+markers <- markers[!grepl('MT-', markers$gene),]
+
+
+mg1_markers <- subset(markers, group == 'MG1') %>% 
+  slice_max(order_by = avg_log2FC, n=50) %>% .$gene
+
+mg2_markers <- subset(markers, group == 'MG2') %>% 
+  slice_max(order_by = avg_log2FC, n=50) %>% .$gene
+
+setdiff(mg1_markers, mg2_markers)
+setdiff(mg2_markers, mg1_markers)
+
+
+
+asc1_markers <- subset(markers, group == 'ASC1') %>% 
+  slice_max(order_by = avg_log2FC, n=50) %>% .$gene
+
+asc2_markers <- subset(markers, group == 'ASC2') %>% 
+  slice_max(order_by = avg_log2FC, n=50) %>% .$gene
+
+asc4_markers <- subset(markers, group == 'ASC4') %>% 
+  slice_max(order_by = avg_log2FC, n=50) %>% .$gene
+
+
+setdiff(asc1_markers, asc2_markers)
+setdiff(asc2_markers, asc1_markers)
+setdiff(asc4_markers, c(asc1_markers, asc2_markers))
+
+tp_markers <- subset(markers, group == 'T-Pericyte') %>% 
+  slice_max(order_by = avg_log2FC, n=50) %>% .$gene
+
+mp_markers <- subset(markers, group == 'M-Pericyte') %>% 
+  slice_max(order_by = avg_log2FC, n=50) %>% .$gene
+
+setdiff(tp_markers, mp_markers)
+setdiff(mp_markers, tp_markers)
+
+
+```
+
+Looking at the expression of the ST DEGs in the snRNA dataset 
+
+```{r eval=FALSE}
+
+# color scheme:
+color_df <- read.csv(file='/dfs7/swaruplab/smorabit/analysis/ADDS_2021/splitseq/integration/data/cell_identity.csv')
+
+group_levels <- c(
+  'EX L2', 'EX L2-3', 'EX L3-5', 'EX L5', 'EX L5-6', 'EX L6',
+  'INH VIP+', 'INH', 'INH LAMP5+', 'INH PVALB+', 'INH SST+',
+  'ODC1', 'ODC2', 'ODC3',
+  'OPC1', 'OPC2', 'OPC3',
+  'MG1', 'MG2',
+  'ASC1', 'ASC2', 'ASC3', 'ASC4',
+  'END Arterial', 'END Capillary',
+  'T-Pericyte', 'M-Pericyte', 'SMC',
+  'Perivascular Fibroblast', 'Meningeal Fibroblast'
+)
+color_df$group <- factor(as.character(color_df$group), levels=group_levels)
+color_df <- arrange(color_df, group)
+
+seurat_obj$cell_identity <- factor(
+  as.character(seurat_obj$cell_identity),
+  levels = group_levels
+)
+
+# read cluster marker genes for snRNA
+markers <- read.csv(paste0('/dfs7/swaruplab/smorabit/analysis/ADDS_2021/splitseq/integration/DEGs/combined/cluster_markers.csv'))
+group_levels <- levels(seurat_obj$cell_identity)
+markers$group <- factor(as.character(markers$group), levels=group_levels)
+markers <- markers[!grepl('MT-', markers$gene),]
+
+# get shared up-regulated DEGs in AD/DS & late-AD in each cluster:
+
+fc_thresh <- 0.1
+
+groups <- unique(degs_adds$group)
+shared_list <- list()
+for(cur_group in groups){
+
+  cur_adds <- subset(degs_adds, group == cur_group & p_val_adj < 0.05 & avg_log2FC > fc_thresh)
+  cur_lad <- subset(degs_lad, group == cur_group & p_val_adj < 0.05 & avg_log2FC > fc_thresh)
+
+  shared_genes <- intersect(cur_adds$gene, cur_lad$gene)
+  adds_genes <- cur_adds$gene[!(cur_adds$gene %in% cur_lad$gene)]
+  lad_genes <- cur_lad$gene[!(cur_lad$gene %in% cur_adds$gene)]
+
+
+  print(length(shared_genes))
+  shared_list[[cur_group]] <- shared_genes
+
+}
+
+plot_genes <- unique(as.character(unlist(shared_list)))
+st_plot_genes <- plot_genes
+
+# which o
+plot_genes <- markers %>% 
+  subset(gene %in% plot_genes) %>%
+  arrange(group) %>% .$gene %>% unique
+
+print(length(plot_genes))
+
+# set random seed
+set.seed(42)
+
+#seurat_plot <- subset(seurat_obj, Study == 'ADDS')
+
+seurat_plot$barcode <- colnames(seurat_plot)
+temp <- table(seurat_plot@meta.data$cell_identity)
+
+df <- data.frame()
+for(i in 1:length(temp)){
+
+  if(temp[[i]] < 1000){
+    cur_df <- seurat_plot@meta.data %>% subset(cell_identity == names(temp)[i])
+  } else{
+    cur_df <- seurat_plot@meta.data %>% subset(cell_identity == names(temp)[i]) %>% sample_n(1000)
+  }
+  df <- rbind(df, cur_df)
+}
+
+seurat_plot <- ScaleData(seurat_plot, features=plot_genes)
+
+p <- DoHeatmap(
+  seurat_plot %>% subset(barcode %in% df$barcode),
+  features=unlist(plot_genes),
+  group.by='cell_identity',
+  group.colors = color_df$colour,
+  raster=TRUE, slot='scale.data',
+  size = 0
+) + theme(
+  axis.text.y = element_text(face='italic', size=3)
+)
+
+pdf(paste0(fig_dir, 'ST_DEGs_snRNA_upreg.pdf'), width=12, height=6, useDingbats=FALSE)
+p
+dev.off()
+
+
+####################################################
+# downregulated
+####################################################
+
+
+# get shared up-regulated DEGs in AD/DS & late-AD in each cluster:
+
+fc_thresh <- -0.1
+
+groups <- unique(degs_adds$group)
+shared_list <- list()
+for(cur_group in groups){
+
+  cur_adds <- subset(degs_adds, group == cur_group & p_val_adj < 0.05 & avg_log2FC < fc_thresh)
+  cur_lad <- subset(degs_lad, group == cur_group & p_val_adj < 0.05 & avg_log2FC < fc_thresh)
+
+  shared_genes <- intersect(cur_adds$gene, cur_lad$gene)
+  adds_genes <- cur_adds$gene[!(cur_adds$gene %in% cur_lad$gene)]
+  lad_genes <- cur_lad$gene[!(cur_lad$gene %in% cur_adds$gene)]
+
+
+  print(length(shared_genes))
+  shared_list[[cur_group]] <- shared_genes
+
+}
+
+plot_genes <- unique(as.character(unlist(shared_list)))
+
+# which o
+plot_genes <- markers %>% 
+  subset(gene %in% plot_genes) %>%
+  arrange(group) %>% .$gene %>% unique
+
+print(length(plot_genes))
+
+# set random seed
+set.seed(42)
+
+#seurat_plot <- subset(seurat_obj, Study == 'ADDS')
+
+seurat_plot$barcode <- colnames(seurat_plot)
+temp <- table(seurat_plot@meta.data$cell_identity)
+
+df <- data.frame()
+for(i in 1:length(temp)){
+
+  if(temp[[i]] < 1000){
+    cur_df <- seurat_plot@meta.data %>% subset(cell_identity == names(temp)[i])
+  } else{
+    cur_df <- seurat_plot@meta.data %>% subset(cell_identity == names(temp)[i]) %>% sample_n(1000)
+  }
+  df <- rbind(df, cur_df)
+}
+
+seurat_plot <- ScaleData(seurat_plot, features=plot_genes)
+
+p <- DoHeatmap(
+  seurat_plot %>% subset(barcode %in% df$barcode),
+  features=unlist(plot_genes),
+  group.by='cell_identity',
+  group.colors = color_df$colour,
+  raster=TRUE, slot='scale.data',
+  size = 0
+) + theme(
+  axis.text.y = element_text(face='italic', size=3)
+)
+
+pdf(paste0(fig_dir, 'ST_DEGs_snRNA_downreg.pdf'), width=12, height=6, useDingbats=FALSE)
+p
+dev.off()
+
+
+
+
+####################################################
+# are there are any spatial DEGs that are shared
+####################################################
+
+sc_degs_adds <- read.csv(paste0('/dfs7/swaruplab/smorabit/analysis/ADDS_2021/splitseq/integration/DEGs/combined/DS_ci_FCX_degs.csv'))
+sc_degs_lad <- read.csv(paste0('/dfs7/swaruplab/smorabit/analysis/ADDS_2021/splitseq/integration/DEGs/combined/AD_ci_degs.csv'))
+
+sc_degs_adds <- sc_degs_adds[!grepl('MT-', sc_degs_adds$gene),]
+sc_degs_lad <- sc_degs_lad[!grepl('MT-', sc_degs_lad$gene),]
+
+# human condition color scheme 
+sc_diag_cp <- c("Control" = "#B8DBC5", "Early-AD" = "#E7BDE1" , "AD" = "#CF8BA3", "DSAD" = "#9E6D7F")
+st_diag_cp <- c("Control" = "#B8DBC5", "earlyAD" = "#E7BDE1" , "AD" = "#CF8BA3", "AD_DS" = "#9E6D7F")
+
+
+fc_thresh <-  0.1
+
+groups <- unique(sc_degs_adds$group)
+sc_shared_list <- list()
+for(cur_group in groups){
+
+  cur_adds <- subset(sc_degs_adds, group == cur_group & p_val_adj < 0.05 & avg_log2FC > fc_thresh)
+  cur_lad <- subset(sc_degs_lad, group == cur_group & p_val_adj < 0.05 & avg_log2FC > fc_thresh)
+
+  shared_genes <- intersect(cur_adds$gene, cur_lad$gene)
+  adds_genes <- cur_adds$gene[!(cur_adds$gene %in% cur_lad$gene)]
+  lad_genes <- cur_lad$gene[!(cur_lad$gene %in% cur_adds$gene)]
+
+
+  print(length(shared_genes))
+  sc_shared_list[[cur_group]] <- shared_genes
+
+}
+
+sc_plot_genes <- unique(as.character(unlist(sc_shared_list)))
+st_sc_shared <- intersect(st_plot_genes, sc_plot_genes)
+st_sc_shared
+
+
+dir.create(paste0(fig_dir, 'shared_DEGs_vln'))
+
+for(cur_feat in st_sc_shared){
+  print(cur_feat)
+  p1 <- VlnPlot(
+    seurat_obj, 
+    features = cur_feat,
+    group.by = 'cell_identity',
+    split.by = 'Diagnosis',
+    pt.size=0
+  ) + xlab('') + ylab('') + NoLegend() + 
+  scale_fill_manual(values=sc_diag_cp)
+
+  p2 <- VlnPlot(
+    seurat_human, 
+    features = cur_feat,
+    group.by = 'annotation',
+    split.by = 'Diagnosis',
+    pt.size=0
+  ) + xlab('') + ylab('') + 
+  scale_fill_manual(values=st_diag_cp)
+
+  p <- (p1 | p2) + plot_layout(widths=c(3, 1))
+
+
+  pdf(paste0(fig_dir, 'shared_DEGs_vln/', cur_feat, '_vln.pdf'), width=16, height=3, useDingbats=FALSE)
+  print(p)
+  dev.off()
+
+}
+
+features <- c('BDP1', 'CAMK2B', 'ADD3', 'QKI', 'ERBIN', 'NEAT1')
+
+library(ggpubr)
+p <- custom_vln(
+    seurat_obj,
+    features = features,
+    group.by = 'cell_identity',
+    split.by = 'Diagnosis',
+    add_boxplot=FALSE,
+    split_colors=sc_diag_cp,
+    comparisons=NA
+
+  )
+
+ pdf(paste0(fig_dir, 'test_stack_vln.pdf'), width=12, height=6, useDingbats=FALSE)
+print(p)
+dev.off()
+
+```
+
+"Deconvolute" which spatial DEGs came from which cell type 
+
+```{r eval=FALSE}
+
+
+# color scheme:
+color_df <- read.csv(file='/dfs7/swaruplab/smorabit/analysis/ADDS_2021/splitseq/integration/data/cell_identity.csv')
+
+group_levels <- c(
+  'EX L2', 'EX L2-3', 'EX L3-5', 'EX L5', 'EX L5-6', 'EX L6',
+  'INH VIP+', 'INH', 'INH LAMP5+', 'INH PVALB+', 'INH SST+',
+  'ODC1', 'ODC2', 'ODC3',
+  'OPC1', 'OPC2', 'OPC3',
+  'MG1', 'MG2',
+  'ASC1', 'ASC2', 'ASC3', 'ASC4',
+  'END Arterial', 'END Capillary',
+  'T-Pericyte', 'M-Pericyte', 'SMC',
+  'Perivascular Fibroblast', 'Meningeal Fibroblast'
+)
+color_df$group <- factor(as.character(color_df$group), levels=group_levels)
+color_df <- arrange(color_df, group)
+cp <- color_df$colour; names(cp) <- group_levels
+cp <- c(cp, c('None' = 'grey'))
+
+seurat_obj$cell_identity <- factor(
+  as.character(seurat_obj$cell_identity),
+  levels = group_levels
+)
+
+# read cluster marker genes for snRNA
+markers <- read.csv(paste0('/dfs7/swaruplab/smorabit/analysis/ADDS_2021/splitseq/integration/DEGs/combined/cluster_markers.csv'))
+group_levels <- levels(seurat_obj$cell_identity)
+markers$group <- factor(as.character(markers$group), levels=group_levels)
+markers <- markers[!grepl('MT-', markers$gene),]
+
+
+# get the current DEGs:
+degs <- degs_adds; name <- 'ADDS'
+degs <- degs_lad; name <- 'LAD'
+degs <- degs_ead; name <- 'EAD'
+
+
+groups <- unique(degs_adds$group)
+cur_group <- groups[1]
+
+prop_df <- data.frame()
+logfc_thresh <- 0.25
+
+# this is only for up-regulated genes
+# should modify for down-reg later
+gene_list <- list()
+for(cur_group in groups){
+
+  cur_degs <- subset(degs, group == cur_group & avg_log2FC >= logfc_thresh & p_val_adj <= 0.05)
+  cur_genes <- unique(as.character(cur_degs$gene))
+
+  # which of these are in the markers?
+  cur_markers <- subset(markers, gene %in% cur_genes) %>% 
+    group_by(gene) %>% 
+    slice_max(order_by=avg_log2FC, n=1) %>% 
+    ungroup()
+
+  # which genes are not in the markers?
+  not_markers <- setdiff(cur_genes, unique(markers$gene))
+
+  gene_list[[paste0(cur_group, '_up')]] <- unique(cur_markers$gene)
+
+  # make a table of the counts
+  marker_counts <- table(cur_markers$group)
+  marker_counts <- marker_counts[group_levels]
+  marker_counts <- c(marker_counts, c('None' = length(not_markers)))
+
+  # set up as a dataframe 
+  cur_df <- data.frame(
+    spatial_group = cur_group,
+    cell_group = names(marker_counts),
+    count = as.numeric(marker_counts),
+    proportion = as.numeric(marker_counts) / sum(marker_counts),
+    direction = 'up'
+  )
+  prop_df <- rbind(prop_df, cur_df)
+
+  # now do it for down-regulated
+  cur_degs <- subset(degs, group == cur_group & avg_log2FC <= -logfc_thresh & p_val_adj <= 0.05)
+  cur_genes <- unique(as.character(cur_degs$gene))
+
+  # which of these are in the markers?
+  cur_markers <- subset(markers, gene %in% cur_genes) %>% 
+    group_by(gene) %>% 
+    slice_max(order_by=avg_log2FC, n=1) %>% 
+    ungroup()
+
+  # which genes are not in the markers?
+  not_markers <- setdiff(cur_genes, unique(markers$gene))
+
+  # make a table of the counts
+  marker_counts <- table(cur_markers$group)
+  marker_counts <- marker_counts[group_levels]
+  marker_counts <- c(marker_counts, c('None' = length(not_markers)))
+
+  gene_list[[paste0(cur_group, '_down')]] <- unique(cur_markers$gene)
+
+  # set up as a dataframe 
+  cur_df <- data.frame(
+    spatial_group = cur_group,
+    cell_group = names(marker_counts),
+    count = as.numeric(marker_counts),
+    proportion = as.numeric(marker_counts) / sum(marker_counts),
+    direction = 'down'
+  )
+  cur_df$cell_group <- factor(cur_df$cell_group, levels=c(group_levels, 'None'))
+
+  prop_df <- rbind(prop_df, cur_df)
+
+}
+
+ prop_df$cell_group <- factor(prop_df$cell_group, levels=c(group_levels, 'None'))
+
+odc_markers <- subset(markers, group %in% c('ODC1', 'ODC2', 'ODC3')) %>% .$gene %>% unique 
+gene_list_ADDS <- gene_list
+gene_list_eAD <- gene_list
+
+eAD_down <- unique(as.character(unlist(gene_list_eAD[grepl('down', names(gene_list_eAD))])))
+eAD_down <- eAD_down[eAD_down %in% odc_markers]
+ADDS_up <- unique(as.character(unlist(gene_list_ADDS[grepl('up', names(gene_list_ADDS))])))
+ADDS_up <- ADDS_up[ADDS_up %in% odc_markers]
+
+intersect(eAD_down, ADDS_up)
+
+# just plot the number of DEGs:
+deg_counts <- subset(degs, avg_log2FC >= logfc_thresh & p_val_adj <= 0.05) %>% .$group %>% table
+deg_counts <- data.frame(
+  group = names(deg_counts),
+  count = as.numeric(deg_counts)
+)
+p1 <- ggplot(deg_counts, aes(x=group, y=count, fill=group)) + 
+  geom_bar(stat='identity') + 
+  geom_text(aes(label=count), vjust=0.5) +
+  scale_fill_manual(values=human_cp) + NoLegend() + 
+  theme(
+    axis.line.x = element_blank(),
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank(),
+    axis.title.x = element_blank(),
+    axis.title.y = element_blank(),
+    plot.margin = margin(c(0,0,0,0))
+  )
+
+
+p2 <- prop_df %>% subset(direction == 'up') %>% 
+  ggplot(aes(x=spatial_group, y=count, fill=cell_group)) + 
+  geom_bar(position='fill', stat='identity') + 
+  ylab('') + xlab('') + labs(fill="") +
+  RotatedAxis() + 
+  scale_fill_manual(values=cp) + 
+   NoLegend() +
+  #  scale_y_continuous(expand = c(0, 0), limits = c(0, 1)) +
+  theme(
+    axis.line.x = element_blank(),
+     axis.text.x = element_blank(),
+    axis.ticks.x = element_blank(),
+    axis.title.x = element_blank(),
+    axis.title.y = element_blank(),
+    plot.margin = margin(c(0,0,0,0))
+  )
+
+p3 <- prop_df %>% subset(direction == 'down') %>% 
+  ggplot(aes(x=spatial_group, y=count, fill=fct_rev(cell_group))) + 
+  geom_bar(position='fill', stat='identity') + 
+  ylab('') + xlab('') + labs(fill="") +
+  scale_fill_manual(values=cp) + 
+ # scale_y_continuous(expand = c(0, 0), limits = c(0, 1)) +
+  NoLegend() +
+  theme(
+    axis.line.x = element_blank(),
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank(),
+    axis.title.x = element_blank(),
+    axis.title.y = element_blank(),
+    plot.margin = margin(c(0,0,0,0))
+  )
+
+
+# just plot the number of DEGs:
+deg_counts <- subset(degs, avg_log2FC <= -logfc_thresh & p_val_adj <= 0.05) %>% .$group %>% table
+deg_counts <- data.frame(
+  group = names(deg_counts),
+  count = as.numeric(deg_counts)
+)
+p4 <- ggplot(deg_counts, aes(x=group, y=-count, fill=group)) + 
+  geom_bar(stat='identity') + 
+  geom_text(aes(label=count), vjust=-0.2) +
+  scale_fill_manual(values=human_cp) + NoLegend() + 
+  theme(
+    plot.margin = margin(c(0,0,0,0)),
+    axis.title.x = element_blank(),
+    axis.title.y = element_blank(),
+  ) + RotatedAxis()
+
+patch <- p1 / p2 / p3 / p4 + plot_layout(heights=c(2, 6, 6, 2), guides='collect')
+
+
+pdf(paste0(fig_dir, 'DEG_deconv_barplot_', name, '.pdf'), width=2.75, height=5)
+patch
+dev.off()
+
+
+```
+
+
