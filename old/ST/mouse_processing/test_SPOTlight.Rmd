@@ -1,0 +1,195 @@
+
+```{r eval=FALSE}
+# conda activate cicero
+library(Seurat)
+library(harmony)
+library(tidyverse)
+library(cowplot)
+library(patchwork)
+library(RColorBrewer)
+library(SPOTlight)
+
+
+colfunc <- colorRampPalette(rev(brewer.pal(11, 'Spectral' )))
+theme_set(theme_cowplot())
+
+setwd("/dfs3b/swaruplab/smorabit/analysis/ADDS_2021/visium/5xFAD/test_SPOTlight/")
+
+fig_dir <- "figures/"
+data_dir <- "data/"
+
+umap_theme <- theme(
+  axis.line=element_blank(),
+  axis.text.x=element_blank(),
+  axis.text.y=element_blank(),
+  axis.ticks=element_blank(),
+  axis.title.x=element_blank(),
+  axis.title.y=element_blank(),
+  panel.background=element_blank(),
+  panel.border=element_blank(),
+  panel.grid.major=element_blank(),
+  panel.grid.minor=element_blank(),
+  plot.background=element_blank()
+)
+
+# re-load visium data:
+sp_obj <- readRDS(file='/dfs3b/swaruplab/smorabit/analysis/ADDS_2021/visium/5xFAD/July_2021/data/5XFAD_seurat_processed.rds')
+
+# load Zhou snRNA-seq
+zhou <- readRDS("~/swaruplab/smorabit/analysis/AD_NucSeq_2019/batch_correction/liger/update/mouse_integration/data/zhou_5xFAD_ProcessedSeuratFinal.rds")
+
+# only keep genes that are also in the visium data:
+genes.keep <- rownames(zhou)[rownames(zhou) %in% rownames(sp_obj)]
+zhou <- zhou[genes.keep,]
+
+
+```
+
+Find Markers for seurat clusters in Zhou data:
+
+```{r eval=FALSE}
+
+# plot Zhou UMAP:
+zhou$celltype_cluster <- paste0(as.character(zhou$Cell.Types), as.character(zhou$seurat_clusters))
+Idents(zhou) <- zhou$celltype_cluster
+
+p <- DimPlot(zhou, label=TRUE) + umap_theme + NoLegend()
+pdf(paste0(fig_dir, 'zhou_clusters.pdf'), width=7, height=7)
+p
+dev.off()
+
+markers <- c('Pdgfra', 'Vtn', 'Csf1r', 'Opalin', 'Snap25', 'Gfap')
+p <- FeaturePlot(zhou, features=markers, order=TRUE, ncol=3)
+pdf(paste0(fig_dir, 'zhou_markers.pdf'), width=12, height=8)
+p
+dev.off()
+
+
+# some cell-types were mislabeled to correct them!!!
+zhou$Cell.Types <- ifelse(as.character(zhou$seurat_clusters) %in% c('13', '32'), 'OPC', as.character(zhou$Cell.Types))
+zhou$Cell.Types <- ifelse(as.character(zhou$seurat_clusters) %in% c('26'), 'VLMC', as.character(zhou$Cell.Types))
+zhou$Cell.Types <- ifelse(as.character(zhou$seurat_clusters) %in% c('35'), 'END', as.character(zhou$Cell.Types))
+
+zhou$celltype_cluster <- paste0(as.character(zhou$Cell.Types), as.character(zhou$seurat_clusters))
+Idents(zhou) <- zhou$celltype_cluster
+
+
+
+
+markers <- FindAllMarkers(
+  zhou,
+  test.use = 'MAST',
+  min.pct = 0.1,
+  logfc.threshold = 0.25,
+  only.pos = TRUE
+)
+write.csv(markers, quote=FALSE, row.names=FALSE, file='data/zhou_marker_genes_spotlight.csv')
+
+```
+
+
+Run spotlight on one spatial sample:
+
+```{r eval=FALSE}
+
+
+# re-load markers
+markers <- read.csv(file='data/zhou_marker_genes_spotlight.csv')
+
+
+sp_subset <- subset(sp_obj, SAMPLE == 211)
+cur_image <- names(sp_subset@images)[sapply(names(sp_subset@images), function(x){nrow(sp_subset@images[[x]]@coordinates) > 0})]
+sp_subset@images <- list(cur_image = sp_subset@images[[cur_image]])
+
+set.seed(123)
+
+spotlight_ls <- spotlight_deconvolution(
+  se_sc = zhou,
+  counts_spatial = sp_subset@assays$Spatial@counts,
+  clust_vr = "celltype_cluster", # Variable in sc_seu containing the cell-type annotation
+  cluster_markers = markers, # Dataframe with the marker genes
+  cl_n = 100, # number of cells per cell type to use
+  hvg = 3000, # Number of HVG to use
+  ntop = NULL, # How many of the marker genes to use (by default all)
+  transf = "uv", # Perform unit-variance scaling per cell and spot prior to factorzation and NLS
+  method = "nsNMF", # Factorization method
+  min_cont = 0 # Remove those cells contributing to a spot below a certain threshold
+)
+
+
+saveRDS(object = spotlight_ls, file = "data/spotlight_ls.rds")
+
+
+nmf_mod <- spotlight_ls[[1]]
+decon_mtrx <- spotlight_ls[[2]]
+
+
+
+# This is the equivalent to setting min_cont to 0.04
+decon_mtrx_sub <- decon_mtrx[, colnames(decon_mtrx) != "res_ss"]
+decon_mtrx_sub[decon_mtrx_sub < 0.08] <- 0
+decon_mtrx <- cbind(decon_mtrx_sub, "res_ss" = decon_mtrx[, "res_ss"])
+rownames(decon_mtrx) <- colnames(sp_subset)
+
+decon_df <- decon_mtrx %>%
+  data.frame() %>%
+  tibble::rownames_to_column("barcodes")
+
+
+sp_subset@meta.data <- sp_subset@meta.data %>%
+  tibble::rownames_to_column("barcodes") %>%
+  dplyr::left_join(decon_df, by = "barcodes") %>%
+  tibble::column_to_rownames("barcodes")
+
+
+```
+
+Inspect the topic profiles for each cluster:
+
+```{r eval=FALSE}
+
+h <- NMF::coef(nmf_mod[[1]])
+rownames(h) <- paste("Topic", 1:nrow(h), sep = "_")
+topic_profile_plts <- SPOTlight::dot_plot_profiles_fun(
+  h = h,
+  train_cell_clust = nmf_mod[[2]])
+
+pdf(paste0(fig_dir, 'spotlight_topic_profiles.pdf'), width=10, height=10)
+topic_profile_plts[[2]] + ggplot2::theme(
+  axis.text.x = ggplot2::element_text(angle = 90),
+  axis.text = ggplot2::element_text(size = 12))
+dev.off()
+
+```
+
+Visualize
+
+```{r eval=FALSE}
+
+p <- Seurat::SpatialFeaturePlot(
+  object = sp_subset,
+  features = c("ASC12", "EX2", "INH10", "ODC0", "PER31", "MG6"),
+  alpha = c(0.1, 1), ncol=3)
+
+
+pdf(paste0(fig_dir, 'spotlight_featureplot.pdf'), width=12, height=8)
+p
+dev.off()
+
+
+# scatterpie
+cell_types_all <- colnames(decon_mtrx)[which(colnames(decon_mtrx) != "res_ss")]
+
+p <- SPOTlight::spatial_scatterpie(se_obj = sp_subset,
+                              cell_types_all = cell_types_all,
+                              img_path =  "/dfs3b/swaruplab/smorabit/data/Visium_Mouse_2021/July_2021/spaceranger_count/Visium4/outs/spatial/tissue_lowres_image.png",
+                              pie_scale = 0.4)
+
+
+
+pdf(paste0(fig_dir, 'spotlight_scatterpie.pdf'), width=9, height=9)
+p
+dev.off()
+
+
+```

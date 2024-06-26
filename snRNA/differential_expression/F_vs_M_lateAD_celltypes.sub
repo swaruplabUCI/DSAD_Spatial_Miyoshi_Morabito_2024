@@ -1,0 +1,51 @@
+#!/bin/bash
+#SBATCH --job-name=DxSexADct
+#SBATCH -p standard
+#SBATCH -A vswarup_lab
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=32
+#SBATCH --error=slurm-%J.err
+#SBATCH --mem 128G
+#SBATCH --array=1-10
+#SBATCH --time=18:00:00
+
+source ~/.bash_profile
+conda activate hdWGCNA
+
+# seurat object path:
+seurat="/dfs7/swaruplab/smorabit/analysis/ADDS_2021/splitseq/integration/data/AD_integrated.rds"
+outdir="/dfs7/swaruplab/smorabit/analysis/ADDS_2021/splitseq/integration/DEGs/F_vs_M_AD_celltype/"
+type="conditions"
+condition="DX_sex"
+cluster="cell_type"
+latent="Batch,nCount_RNA,PMI"
+
+mkdir $outdir
+
+################################################################################
+# F vs M
+################################################################################
+
+name="F_v_M_AD_celltype"
+group1="AD_F"
+group2="AD_M"
+
+# launch R script:
+Rscript --vanilla /dfs7/swaruplab/smorabit/analysis/ADDS_2021/bin/parallel_DEGs.R \
+  --seurat $seurat \
+  --outdir $outdir \
+  --type $type \
+  --cluster $cluster \
+  --condition $condition \
+  --name $name \
+  --index $SLURM_ARRAY_TASK_ID \
+  --group1 $group1 \
+  --group2 $group2 \
+  --test "MAST" \
+  --pos "FALSE" \
+  --pct 0 \
+  --logfc 0 \
+  --verbose "TRUE" \
+  --latent $latent \
+  --cores 32 

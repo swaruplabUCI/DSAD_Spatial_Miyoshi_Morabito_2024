@@ -1,0 +1,39 @@
+#!/bin/bash
+#SBATCH --job-name=FindMarkers
+#SBATCH -p standard
+#SBATCH -A vswarup_lab
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=16
+#SBATCH --error=slurm-%J.err
+#SBATCH --mem 128G # adjust this based on the size of your dataset
+#SBATCH --array=1-30 # this should be the number of clusters in your dataset
+#SBATCH --time=6:00:00
+
+# activate your conda environment
+source ~/.bashrc
+conda activate cicero
+
+# seurat object path:
+seurat="/dfs3b/swaruplab/smorabit/analysis/ADDS_2021/splitseq/integration/data/ADDS_integrated.rds"
+outdir="/dfs3b/swaruplab/smorabit/analysis/ADDS_2021/splitseq/integration/DEGs/cluster_markers/"
+type="markers"
+name="cluster_markers" # name to give output files
+cluster="cell_identity" # name of the cluster column in seurat_obj@meta.data
+latent="Batch,nCount_RNA" # any covariates to add in the regression model
+
+# launch R script:
+Rscript --vanilla /dfs3b/swaruplab/smorabit/analysis/ADDS_2021/bin/parallel_DEGs.R \
+    --seurat $seurat \
+    --outdir $outdir \
+    --type $type \
+    --cluster $cluster \
+    --name $name \
+    --index $SLURM_ARRAY_TASK_ID \
+    --test "MAST" \
+    --pos "TRUE" \
+    --pct 0.2 \
+    --logfc 0.25 \
+    --verbose "TRUE" \
+    --latent $latent \
+    --cores 16

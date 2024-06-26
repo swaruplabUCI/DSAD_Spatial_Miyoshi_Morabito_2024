@@ -1,0 +1,61 @@
+#!/bin/bash
+#SBATCH --job-name=sr-5XFAD
+#SBATCH -p standard
+#SBATCH -A vswarup_lab
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=32
+#SBATCH --error=slurm-%J.err
+#SBATCH --mem 128G
+#SBATCH --array=7
+#SBATCH --time=72:00:00
+
+# move to output dir
+cd /dfs3b/swaruplab/smorabit/data/Visium_Mouse_2021/Nov_15_2021/spaceranger_count4/
+
+# set directory for fastqs and images:
+fastqs="/dfs3b/swaruplab/smorabit/data/Visium_Mouse_2021/Nov_15_2021/fastqs/"
+align_dir="/dfs3b/swaruplab/smorabit/data/Visium_Mouse_2021/Nov_15_2021/alignment/"
+sample_meta="/dfs3b/swaruplab/smorabit/data/Visium_Mouse_2021/Nov_15_2021/visium_5xFAD_11-15-21_sample_meta.csv"
+
+# index based on task ID
+let index="$SLURM_ARRAY_TASK_ID"
+
+# sample name is based on the index:
+sample_name="Visium5xFAD_"$index
+echo $sample_name
+
+# add one to index to account for the header line
+let "index=index+1"
+echo $index
+
+settings=$(head -n $index $sample_meta | tail -n 1)
+echo $settings
+
+area=$(echo $settings | cut -d ',' -f 7)
+echo $area
+
+slide=$(echo $settings | cut -d ',' -f 8)
+echo $slide
+
+# get the alignment file
+align_file=$align_dir$slide"-"$area.json
+echo $align_file
+
+# get the image file:
+image_file=$align_dir$slide"_"$area"_crop_fiducials.jpg"
+echo $image_file
+
+# run spaceranger
+transcriptome="/dfs3b/swaruplab/smorabit/resources/spaceranger_reference/refdata-gex-mm10-2020-A"
+~/swaruplab/smorabit/bin/software/spaceranger-1.2.1/spaceranger count \
+                       --id=$sample_name \
+                       --transcriptome=$transcriptome \
+                       --fastqs=$fastqs \
+                       --sample=$sample_name \
+                       --colorizedimage=$image_file \
+                       --slide=$slide \
+                       --area=$area \
+                       --loupe-alignment=$align_file \
+                       --localcores=32 \
+                       --localmem=128

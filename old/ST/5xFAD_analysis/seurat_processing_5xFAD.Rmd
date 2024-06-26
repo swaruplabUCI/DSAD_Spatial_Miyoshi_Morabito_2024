@@ -1,0 +1,508 @@
+# Load libraries and visium samples
+
+```{r eval=FALSE}
+
+# conda activate cicero
+library(Seurat)
+library(harmony)
+library(tidyverse)
+library(cowplot)
+library(patchwork)
+library(RColorBrewer)
+library(tictoc)
+library(BayesSpace)
+library(scater)
+
+colfunc <- colorRampPalette(rev(brewer.pal(11, 'Spectral' )))
+theme_set(theme_cowplot())
+
+setwd("/dfs3b/swaruplab/smorabit/analysis/ADDS_2021/visium/5xFAD")
+
+fig_dir <- "figures/"
+data_dir <- "data/"
+
+
+umap_theme <- theme(
+  axis.line=element_blank(),
+  axis.text.x=element_blank(),
+  axis.text.y=element_blank(),
+  axis.ticks=element_blank(),
+  axis.title.x=element_blank(),
+  axis.title.y=element_blank(),
+  panel.background=element_blank(),
+  panel.border=element_blank(),
+  panel.grid.major=element_blank(),
+  panel.grid.minor=element_blank(),
+  plot.background=element_blank()
+)
+
+# re-load Seurat obj
+seurat_obj <- readRDS(paste0(data_dir,'5XFAD_seurat_processed.rds'))
+
+# re-load BayesSpace object:
+sce.combined <- readRDS(file=paste0(data_dir, '5xFAD_bayesspace.rds'))
+
+seurat_obj$bs.q15 <- sce.combined$spatial.cluster.q15
+
+```
+
+# Seurat clustering analysis
+
+```{r eval=FALSE}
+
+# re-load unprocessed data
+seurat_obj <- readRDS(paste0(data_dir, '5xFAD_visium_unprocessed.rds'))
+seurat_obj <- subset(seurat_obj, nCount_Spatial != 0)
+
+# process data
+seurat_obj <- NormalizeData(seurat_obj)
+seurat_obj <- FindVariableFeatures(seurat_obj, nfeatures=3500)
+seurat_obj <- ScaleData(seurat_obj, features=VariableFeatures(seurat_obj))
+
+# dim reduction and clustering
+seurat_obj <- RunPCA(seurat_obj, verbose = FALSE)
+seurat_obj <- RunHarmony(
+  seurat_obj,
+  group.by.vars='seqbatch',
+  assay='Spatial'
+)
+
+# UMAP + clustering
+seurat_obj <- RunUMAP(
+  seurat_obj,
+  reduction = "harmony",
+  dims = 1:30,
+  min.dist=0.05,
+  #spread=1.5,
+  n.neighbors=5,
+  return.model=TRUE
+)
+seurat_obj <- FindNeighbors(seurat_obj, reduction = "harmony", dims = 1:30)
+seurat_obj <- FindClusters(seurat_obj, verbose = TRUE, res=1)
+
+```
+
+# Plotting stuff on UMAP
+
+```{r eval=FALSE}
+
+# plot umap colored by cluster
+p <- DimPlot(seurat_obj, group.by='seurat_clusters', label=TRUE, raster=FALSE) + NoLegend() + umap_theme
+
+pdf(paste0(fig_dir, 'umap_clusters.pdf'), width=7, height=7, useDingbats=FALSE)
+p
+dev.off()
+
+# color by cluster, split by batch
+p <- DimPlot(seurat_obj, group.by='seurat_clusters', label=TRUE, raster=FALSE, split.by='seqbatch', ncol=3) + umap_theme + NoLegend() + ggtitle('')
+
+pdf(paste0(fig_dir, 'umap_batches.pdf'), width=9, height=6, useDingbats=FALSE)
+p
+dev.off()
+
+# color by cluster, split by sample
+p <- DimPlot(seurat_obj, group.by='seurat_clusters', label=TRUE, raster=FALSE, split.by='SAMPLE', ncol=10) + umap_theme + NoLegend() + ggtitle('')
+
+pdf(paste0(fig_dir, 'umap_samples.pdf'), width=20, height=16, useDingbats=FALSE)
+p
+dev.off()
+
+# color by nCountSpatial
+seurat_obj$log_nCount_Spatial <- log(seurat_obj$nCount_Spatial)
+p <- FeaturePlot(seurat_obj, features='nCount_Spatial', raster=FALSE, order=TRUE) + umap_theme
+  # scale_color_gradientn(colors=colfunc(256), guide = guide_colorbar(barwidth=15, barheight=0.5, ticks=FALSE)) + theme(legend.position='bottom')
+
+pdf(paste0(fig_dir, 'umap_nCountSpatial.pdf'), width=9, height=8, useDingbats=FALSE)
+p
+dev.off()
+
+
+plot_list <- SpatialDimPlot(seurat_obj, label=TRUE, combine=FALSE)
+for(i in 1:length(plot_list)){
+  plot_list[[i]] <- plot_list[[i]] + NoLegend()
+}
+
+pdf(paste0(fig_dir, 'spatial_clusters.pdf'), width=15, height=15, useDingbats=FALSE)
+(p[[1]] + p[[2]]) / (p[[3]] + p[[4]])
+dev.off()
+
+
+
+# marker genes:
+# color by nCountSpatial
+p <- FeaturePlot(seurat_obj, features=c('Mbp', 'Csf1r', 'Gfap', 'Gad1'), raster=TRUE, order=TRUE, ncol=2) + umap_theme
+  # scale_color_gradientn(colors=colfunc(256), guide = guide_colorbar(barwidth=15, barheight=0.5, ticks=FALSE)) + theme(legend.position='bottom')
+
+pdf(paste0(fig_dir, 'umap_markers.pdf'), width=10, height=10, useDingbats=FALSE)
+p
+dev.off()
+
+saveRDS(seurat_obj, paste0(data_dir,'5XFAD_seurat_processed.rds'))
+
+```
+
+
+
+
+## Label transfer
+
+```{r eval=FALSE}
+
+# load processed data:
+rosenberg <- readRDS('~/swaruplab/smorabit/collab/Harvard_visium/rosenberg_2018/data/rosenberg_brain_seurat_processed.rds')
+
+# keep genes in rosenberg that are in seurat_obj:
+rosenberg <- rosenberg[rownames(rosenberg)[rownames(rosenberg) %in% rownames(seurat_obj)],]
+
+# transfer anchors between ros and seurat_obj:
+anchors <- FindTransferAnchors(
+  reference = rosenberg,
+  query = seurat_obj
+)
+saveRDS(anchors, 'data/rosenberg_anchors.rds')
+
+# make predictions using anchors:
+predictions.assay <- TransferData(
+  anchorset = anchors,
+  refdata = rosenberg$cluster_assignment,
+  prediction.assay = TRUE,
+  dims=1:30,
+  weight.reduction = seurat_obj[["harmony"]]
+)
+
+# add to seurat_obj seurat obj
+seurat_obj[["predictions"]] <- predictions.assay
+saveRDS(seurat_obj, paste0(data_dir,'5XFAD_seurat_processed.rds')
+
+```
+
+
+Plot prediction scores:
+
+```{r eval=FALSE}
+
+dir.create(paste0(fig_dir, 'rosenberg_label_transfer'))
+
+# Plot prediction scores for some clusters:
+DefaultAssay(seurat_obj) <- "predictions"
+
+prediction_matrix <- GetAssayData(seurat_obj, assay='predictions')
+
+for(label in rownames(seurat_obj)[rowSums(prediction_matrix) > 0]){
+
+  name <- gsub(' ', '_', label)
+  name <- gsub('/', '_', label)
+  print(name)
+
+  # umap feature plot
+  p1 <- FeaturePlot(seurat_obj, features=label, order=TRUE) +
+    scale_color_gradientn(colors=colfunc(256), guide = guide_colorbar(barwidth=15, barheight=0.5, ticks=FALSE)) +
+    umap_theme + theme(legend.position='bottom')
+
+  # spatial feature plot
+  # plot_list <- list()
+  # for(sample in unique(seurat_obj$SampleID)){
+  #   cur <- subset(seurat_obj, SampleID == sample)
+  #   cur_image <- names(cur@images)[sapply(names(cur@images), function(x){nrow(cur@images[[x]]@coordinates) > 0})]
+  #   cur@images <- list(cur_image = cur@images[[cur_image]])
+  #   plot_list[[sample]] <- SpatialFeaturePlot(cur, features=label) + ggtitle(sample)  +
+  #   #  scale_color_gradientn(colors=colfunc(256), guide = guide_colorbar(barwidth=15, barheight=0.5, ticks=FALSE)) +
+  #     theme(legend.position='bottom', legend.title=element_blank())
+  # }
+
+  # cluster violin plot:
+  p3 <- VlnPlot(seurat_obj, features=label, pt.size=0) +
+   NoLegend() + ggtitle('') +
+   ylab(paste(label, 'score')) + xlab('clusters')
+
+  # patchwork
+  patch <- (p1 / p3)
+
+  pdf(paste0(fig_dir, 'rosenberg_label_transfer/', name, '.pdf'), width=12, height=12, useDingbats=FALSE)
+  print(patch + plot_layout(heights=c(4,1)))
+  dev.off()
+
+}
+
+```
+
+
+# get the image coordinates for BayesSpace:
+```{r eval=FALSE}
+
+# get all of the image coordinates for BayesSpace
+image_df <- do.call(rbind, lapply(names(seurat_obj@images), function(cur_image){seurat_obj@images[[cur_image]]@coordinates}))
+
+# re-order the rows of image_df to match the seurat_obj
+image_df <- image_df[colnames(seurat_obj),]
+all.equal(rownames(image_df), colnames(seurat_obj))
+
+
+```
+
+
+
+## Run BayesSpace
+
+* How do I get the correct image coordinates?????
+  - Need to loop over each sample I think...
+  - Actually maybe just do this while I setup the data initially?
+
+```{r eval=FALSE}
+
+
+# convert from Seurat to SCE format:
+sce.combined <- seurat_obj %>% as.SingleCellExperiment()
+
+# add the row, col, imagerow, imagecol
+sce.combined$row <- image_df$row
+sce.combined$imagerow <- image_df$imagerow
+sce.combined$col <- image_df$col
+sce.combined$imagecol <- image_df$imagecol
+
+# pre-process
+sce.combined = spatialPreprocess(sce.combined, n.PCs = 50) #lognormalize, PCA
+
+# correct with harmony
+sce.combined = RunHarmony(sce.combined, "SAMPLE", verbose = T)
+
+# run UMAP
+sce.combined = runUMAP(
+  sce.combined,
+  dimred = "HARMONY",
+  name = "UMAP.HARMONY",
+  n_neighbors=10
+)
+
+# where are the row & col in sce.combined
+
+colnames(reducedDim(sce.combined, "UMAP.HARMONY")) = c("UMAP1", "UMAP2")
+
+
+p <- ggplot(data.frame(reducedDim(sce.combined, "UMAP.HARMONY")),
+  aes(x = UMAP1, y = UMAP2, color = factor(sce.combined$SAMPLE))) +
+  geom_point() +
+  labs(color = "Sample") +
+  theme_bw() + NoLegend()
+
+pdf(paste0(fig_dir, 'baysespace_umap.pdf'), width=7, height=7)
+p
+dev.off()
+
+saveRDS(sce.combined, file=paste0(data_dir, '5xFAD_bayesspace.rds'))
+
+
+```
+
+Come up with a way to offset the samples
+
+10 x 8 grid
+
+
+```{r eval=FALSE}
+
+sce.combined <- readRDS(file=paste0(data_dir, '5xFAD_bayesspace.rds'))
+
+# get all of the image coordinates for BayesSpace
+image_df <- do.call(rbind, lapply(names(seurat_obj@images), function(cur_image){
+  cur_coords <- seurat_obj@images[[cur_image]]@coordinates
+  cur_coords$image <- cur_image
+  cur_coords
+}))
+
+# re-order the rows of image_df to match the seurat_obj
+image_df <- image_df[colnames(seurat_obj),]
+all.equal(rownames(image_df), colnames(seurat_obj))
+
+
+range(image_df$row)
+range(image_df$col)
+
+# based on the max of the row/col
+row_offset <- 100
+col_offset <- 150
+
+images <- unique(image_df$image)
+offset_df <- data.frame()
+cur_ind <- 1
+for(i in 1:10){
+  cur_row_offset <- row_offset*i
+  for(j in 1:8){
+
+    print(cur_ind)
+    cur_col_offset <- col_offset*j
+
+    # get cur_coords:
+    cur_img <- images[cur_ind]
+    cur_coords <- image_df %>% subset(image == cur_img)
+
+    # apply offset:
+    cur_coords$row <- cur_coords$row + cur_row_offset
+    cur_coords$col <- cur_coords$col + cur_col_offset
+
+    offset_df <- rbind(offset_df, cur_coords)
+
+    cur_ind <- cur_ind + 1
+
+  }
+}
+
+offset_df <- offset_df[rownames(image_df),]
+
+# add the row, col, imagerow, imagecol
+sce.combined$row <- offset_df$row
+sce.combined$imagerow <- offset_df$imagerow
+sce.combined$col <- offset_df$col
+sce.combined$imagecol <- offset_df$imagecol
+
+
+# add it to the seurat object:
+seurat_obj$row <- offset_df$row
+seurat_obj$col <- offset_df$col
+seurat_obj$imagerow <- offset_df$imagerow
+seurat_obj$imagecol <- offset_df$imagecol
+
+p <- clusterPlot(sce.combined, "SAMPLE", color=NA) + #make sure no overlap between samples
+  labs(color = "Sample", title = "Offset check")
+
+pdf(paste0(fig_dir, 'slide_offset_test.pdf'), width=10, height=10)
+p
+dev.off()
+
+
+library(MetBrewer)
+
+# test plotting with ggplot on image df
+p <- offset_df %>% ggplot(aes(x=row, y=col, color=image)) +
+  geom_point() + umap_theme + NoLegend() +
+  scale_color_manual(values=met.brewer("Signac", length(unique(offset_df$image))))
+
+pdf(paste0(fig_dir, 'test_offset.pdf'), width=20, height=16)
+p
+dev.off()
+
+```
+
+```{r eval=FALSE}
+
+
+library(tictoc)
+
+
+
+# run BayesSpace clustering with q=15:
+tic()
+sce.combined = spatialCluster(sce.combined, use.dimred = "HARMONY", platform='Visium', q = 15, nrep = 5000) #use HARMONY
+x <- toc() # took about 3 hours
+
+sce.combined$spatial.cluster.q15 <- sce.combined$spatial.cluster
+seurat_obj$bs.q15 <- sce.combined$spatial.cluster
+
+
+
+
+p <- clusterPlot(sce.combined, color = NA) + #plot clusters
+labs(title = "BayesSpace joint clustering")
+
+pdf(paste0(fig_dir, 'BayesSpace_test.pdf'), width=10, height=10)
+p
+dev.off()
+
+p <- ggplot(data.frame(reducedDim(sce.combined, "UMAP.HARMONY")),
+  aes(x = UMAP1, y = UMAP2, color = factor(sce.combined$spatial.cluster))) +
+  geom_point(size=0.2, alpha=0.75) +
+  labs(color = "BayesSpace Clusters") + ggtitle('BayesSpace Clusters') +
+  umap_theme + NoLegend()
+
+pdf(paste0(fig_dir, 'baysespace_umap_cluster.pdf'), width=7, height=7)
+p
+dev.off()
+
+# run BayesSpace clustering with q=10:
+tic()
+sce.combined = spatialCluster(sce.combined, use.dimred = "HARMONY", platform='Visium', q = 10, nrep = 5000, burn.in=500) #use HARMONY
+x1 <- toc() # took about 3 hours
+sce.combined$spatial.cluster.q10 <- sce.combined$spatial.cluster
+seurat_obj$bs.q10 <- sce.combined$spatial.cluster
+
+# run BayesSpace clustering with q=20:
+tic()
+sce.combined = spatialCluster(sce.combined, use.dimred = "HARMONY", platform='Visium', q = 20, nrep = 5000, burn.in=500) #use HARMONY
+x2 <- toc() # took about 3 hours
+sce.combined$spatial.cluster.q20 <- sce.combined$spatial.cluster
+seurat_obj$bs.q20 <- sce.combined$spatial.cluster
+
+saveRDS(sce.combined, file=paste0(data_dir, '5xFAD_bayesspace.rds'))
+
+
+
+
+
+p1 <- clusterPlot(sce.combined, label = "spatial.cluster.q10", color=NA) +
+  ggtitle('BayesSpace clusters, q=10')
+
+p2 <- clusterPlot(sce.combined, label = "spatial.cluster.q15", color=NA) +
+  ggtitle('BayesSpace clusters, q=15')
+
+p3 <- clusterPlot(sce.combined, label = "spatial.cluster.q20", color=NA) +
+  ggtitle('BayesSpace clusters, q=20')
+
+pdf(paste0(fig_dir, 'baysespace_clusters.pdf'), width=10, height=10)
+p1
+p2
+p3
+dev.off()
+
+
+
+
+
+
+
+
+# run bayesspace enhanced clustering:
+# this can't run it is asking for 6 TB of RAM lmaoooo
+tic()
+sce.enhanced <- spatialEnhance(
+  sce.combined,
+  q = 15,
+  d = 15, # number of components
+  use.dimred = "HARMONY",
+  platform = "Visium",
+  nrep = 5000, burn.in = 1000,
+  gamma=3, verbose=TRUE,
+  jitter_scale=5.5, jitter_prior=0.3,
+  save.chain=TRUE,
+  chain.fname = 'test_bayesspace_mcmc.hdf5'
+)
+y <- toc()
+
+
+
+
+
+
+```
+
+
+Annotate clusters
+
+```{r eval=FALSE}
+
+anno_df <- read.csv("data/5xFAD_bayesspace_cluster_annotations.csv")
+
+ix <- match(seurat_obj$bs.q15, anno_df$cluster)
+seurat_obj$annotation <- anno_df$annotation[ix]
+
+
+# plot umap colored by cluster
+p <- DimPlot(seurat_obj, group.by='annotation', label=TRUE, raster=FALSE) + umap_theme
+
+pdf(paste0(fig_dir, 'umap_annotation.pdf'), width=9, height=7, useDingbats=FALSE)
+p
+dev.off()
+
+saveRDS(seurat_obj, paste0(data_dir,'5XFAD_seurat_processed.rds'))
+
+
+```

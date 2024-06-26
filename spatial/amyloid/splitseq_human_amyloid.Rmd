@@ -1,0 +1,994 @@
+```{r eval=FALSE}
+
+library(Seurat)
+#library(tidyverse)
+library(dplyr)
+library(ggplot2)
+library(cowplot)
+library(Matrix)
+library(viridis)
+library(harmony)
+library(ggpubr)
+library(patchwork)
+library(RColorBrewer)
+library(ggrepel)
+library(CellTrek)
+library(hdWGCNA)
+
+#source("/pub/smorabit/hdWGCNA/bin/spatial_functions.R")
+source('/dfs7/swaruplab/smorabit/analysis/scWGCNA/bin/spatial_functions.R')
+source('/dfs7/swaruplab/smorabit/analysis/ADDS_2021/splitseq/integration/amyloid/bin/Visium_amyloid_function.R')
+
+
+setwd("/dfs7/swaruplab/smorabit/analysis/ADDS_2021/splitseq/integration/amyloid/")
+fig_dir <- "figures/"
+data_dir <- "data/"
+
+
+# load visium & split-seq seurat objects:
+seurat_vis <- readRDS("/dfs7/swaruplab/emiyoshi/Visium_ADDS/ADDS_seurat_processed_annotated.rds")
+seurat_vis$Diagnosis <- factor(
+  as.character(seurat_vis$Diagnosis),
+  levels = c("Control", "earlyAD", "AD", "AD_DS")
+)
+seurat_vis$SlideCap <- paste0(as.character(seurat_vis$Slide), '_', as.character(seurat_vis$CaptureArea))
+
+dplyr::select(seurat_vis@meta.data, c(Sample, Slide, CaptureArea, seqbatch)) %>% distinct()
+
+
+
+# amyloid visium seurat object
+seurat_amyloid <- readRDS("/dfs7/swaruplab/smorabit/analysis/ADDS_2021/visium/human/voyager/data/ADDS_seurat_processed_geospatial.rds")
+
+# seurat_obj <- readRDS("/dfs7/swaruplab/smorabit/analysis/ADDS_2021/splitseq/data/ADDS_integrated_scvi.rds")
+
+# load ADDS dataset:
+seurat_obj <- readRDS(file="/dfs7/swaruplab/smorabit/analysis/ADDS_2021/splitseq/integration/data/ADDS_integrated.rds" )
+
+# only get the FCX:
+seurat_obj <- subset(seurat_obj, Tissue != 'PCC')
+
+# saveRDS(seurat_obj, file="/dfs7/swaruplab/smorabit/analysis/ADDS_2021/splitseq/integration/data/ADDS_integrated_FCX.rds")
+
+# add barcode:
+seurat_obj$bc <- colnames(seurat_obj)
+seurat_vis$bc <- colnames(seurat_vis)
+
+var_df <- read.delim(file = "/dfs7/swaruplab/smorabit/analysis/ADDS_2021/splitseq/integration/data/ADDS_subclusters_var.tsv", sep='\t')
+
+VariableFeatures(seurat_obj) <- var_df$X
+
+
+# representative samples
+human_rep_samples <- c(
+  'Dec_13_2021_Human5', 'Dec_20_2021_Human1',
+  'Dec_13_2021_Human6', 'Oct_2021_6',
+  'Dec_13_2021_Human3', 'Dec_13_2021_Human7',
+  'Nov_24_2021_VisiumHuman_12', 'Dec_13_2021_Human8'
+)
+
+#################################################################
+# Load color schemes
+#################################################################
+
+
+human_cp <- c(
+      "L1" = "#8B3D5A", "L2-3" = "#E7BDE1", "L3-4" = "#E6A4CD",
+      "L3-4-5" = "#CF8BA3", "L5-6" = "#9E6D7F", "L6b" = "#CDAEB9", "WM1" = "#64BCDB", "WM2" = "#62A7D7", "WM3" = "#99C8D7")
+
+
+# color scheme:
+color_df <- read.csv(file='/dfs7/swaruplab/smorabit/analysis/ADDS_2021/splitseq/integration/data/cell_identity.csv')
+color_df <- color_df[,2:3]
+
+group_levels <- c(
+  'EX L2', 'EX L2-3', 'EX L3-5', 'EX L5', 'EX L5-6', 'EX L6',
+  'INH VIP+', 'INH', 'INH LAMP5+', 'INH PVALB+', 'INH SST+',
+  'ASC1', 'ASC2', 'ASC3', 'ASC4',
+  'MG1', 'MG2',
+  'ODC1', 'ODC2', 'ODC3',
+  'OPC1', 'OPC2', 'OPC3',
+  'END Arterial', 'END Capillary',
+  'T-Pericyte', 'M-Pericyte', 'SMC',
+  'Perivascular Fibroblast', 'Meningeal Fibroblast'
+)
+color_df$group <- factor(as.character(color_df$group), levels=group_levels)
+color_df <- arrange(color_df, group)
+cp <- as.character(color_df$colour)
+names(cp) <- as.character(color_df$group)
+
+
+
+st_color_df <- data.frame(
+  colour = as.character(human_cp),
+  group = names(human_cp)
+)
+st_color_df$group <- factor(as.character(st_color_df$group), levels=names(human_cp))
+
+
+seurat_obj$cell_identity <- factor(
+  as.character(seurat_obj$cell_identity),
+  levels = group_levels
+)
+
+#################################################################
+# Load celltrek coordinates:
+#################################################################
+
+anno_df <- read.csv('/dfs7/swaruplab/smorabit/analysis/ADDS_2021/splitseq/integration/spatial_mapping/celltrek_coords_combined.csv')
+
+
+# load the emily amyloid table:
+emily_amyloid_results <- read.csv("/dfs7/swaruplab/emiyoshi/Visium_ADDS/amyloid_meta.csv")
+
+
+```
+
+Write my own functions to do the amyloid analysis!! 
+
+```{r eval=FALSE}
+
+CalculateSpatialDistances <- function(
+    seurat_obj,
+    scale_factor,
+    img_analysis_files,
+    sample_col = 'Sample',
+    slide_col = 'Slide',
+    capture_col = 'CaptureArea',
+    spot_diameter = 55,
+    subset_samples = TRUE
+){
+
+    # list of columns to check
+    meta_check <- c(sample_col, slide_col, capture_col, 'imagerow', 'imagecol')
+
+    # check that each of those columns are in the seurat object metadata
+    for(col in meta_check){
+        if(!(col %in% colnames(seurat_obj@meta.data))){
+            stop(paste0('Column ', col, ' not found in seurat_obj@meta.data'))
+        }
+    }
+
+    # check that the image analysis files exist
+    if(!all(file.exists(img_analysis_files))){
+        bad_files <- img_analysis_files[!file.exists(img_analysis_files)]
+        stop(paste0('Some img_analysis_files do not exist: ', paste0(bad_files, collapse=', ')))
+    }
+
+    # get a list of the capture areas and the slides in the seurat obj 
+    valid_slide_caps <- unique(paste0(seurat_obj@meta.data[[slide_col]], '_', seurat_obj@meta.data[[capture_col]]))
+
+    # load the quant files:
+    quant_df <- data.frame()
+    for(img_analysis_file in img_analysis_files){
+        
+        print(img_analysis_file)
+
+        # get the slide num and cap area from the file 
+        tmp <- strsplit(img_analysis_file, '/')[[1]]
+        tmp <- tmp[length(tmp)]
+        tmp <- strsplit(tmp, '_')[[1]]
+        cur_slide <- tmp[1]
+        cur_capture <- substr(tmp[2], start=1, stop=2)
+        cur_slide_cap <- paste0(cur_slide, '_', cur_capture)
+
+        # check that cur_slide_cap is valid:
+        if(!(cur_slide_cap %in% valid_slide_caps)){
+            stop(paste0(cur_slide_cap, ' is not a valid combination of Visium Slide number and capture area in this seurat object. Filepath: ', img_analysis_file))
+        }
+
+         # load the amyloid file:
+        quant <- read.table(img_analysis_file, sep = "\t", skip = 1, skipNul = TRUE)
+        quant <- quant[,1:7]
+
+        # give the columns names 
+        colnames(quant) <- c('row', 'Source', 'BinaryID', 'Area', 'Diameter', 'X', 'Y')
+
+        # re-name the binaryID for legibility:
+        quant$BinaryID <- ifelse(
+            grepl('OC', quant$BinaryID), 'OC', 'Amylo'
+        )
+
+        # convert to pixels based on the scale facrtor
+        quant$PixelX <- quant$X / scale_factor
+        quant$PixelY <- quant$Y / scale_factor
+        quant$PixelDiameter <- quant$Diameter / scale_factor
+        quant$PixelArea <- quant$Area / scale_factor
+
+        # add the slide info 
+        quant$Slide <- cur_slide 
+        quant$CaptureArea <- cur_capture 
+        quant$SlideCap <- cur_slide_cap 
+        
+        quant_df <- rbind(quant_df, quant)
+    }
+
+    # loop through each slide / cap and compute the distances
+    img_df <- data.frame()
+    for(cur_slide_cap in unique(quant_df$SlideCap)){
+        
+        print(cur_slide_cap)
+
+        quant <- subset(quant_df, SlideCap == cur_slide_cap)
+        cur_slide <- unique(quant$Slide); cur_capture <- unique(quant$CaptureArea)
+
+        # which visium sample corresponds to this slide/cap? 
+        if(subset_samples){
+            bcs_keep <- seurat_obj@meta.data[[slide_col]] == cur_slide & seurat_obj@meta.data[[capture_col]] == cur_capture
+            cur_meta <- seurat_obj@meta.data[bcs_keep,]
+
+            # check that this only corresponds to one sample:
+            cur_sample <- unique(cur_meta[[sample_col]])
+            if(length(cur_sample) != 1){
+                stop('Current Slide number (', cur_slide, ') and capture area (', cur_capture, ') must correspond to exactly one sample in the seurat_obj@meta.data[[sample_col]]. Filepath: ', img_analysis_file)
+            }
+
+            # subset the seurat object for this sample 
+            cur_seurat <- seurat_obj[,bcs_keep]
+        } else{
+            cur_seurat <- seurat_obj
+        }
+        
+        # split by amylo & OC 
+        quant_list <- quant %>% dplyr::group_by(BinaryID) %>% dplyr::group_split()
+
+        # get the snRNA seurat meta-data
+        cur_meta <- cur_seurat@meta.data
+
+        # compute the distances between plaques and spots
+        out_df <- do.call(cbind, lapply(quant_list, function(binary){
+
+            cur_bid <- unique(binary$BinaryID)
+
+            # make a matrix for the quants 
+            X <- binary %>% 
+                dplyr::select(c(PixelX,PixelY)) %>%
+                as.matrix() %>% t()
+
+            # make matrix for the visium data:
+            spots <- cur_meta[,c('imagecol', 'imagerow')] %>% 
+                dplyr::rename(c(X=imagecol, Y=imagerow)) %>% 
+                as.matrix() %>% t()
+
+            dists <- apply(X, 2, function(x){
+                sqrt(colSums((spots - x)^2))
+            })
+            colnames(dists) <- binary$row
+
+            # flatten into a dataframe
+            dist_df <- reshape2::melt(dists) %>% 
+            dplyr::rename(distance=value)
+
+            # transfer the plaque size info to the new df
+            ix <- match(dist_df$Var2, binary$row)
+            dist_df$PixelArea <- binary$PixelArea[ix]
+            dist_df$PixelDiameter <- binary$PixelDiameter[ix]
+
+            # Just count how many are within a certain distance 
+            dist_df$close <- dist_df$distance <= ((dist_df$PixelDiameter/2) + spot_diameter)
+            bc_totals <- dist_df %>% subset(close) %>% .$Var1 %>% table 
+
+            # make the area zero if the spot isn't close enough 
+            dist_df$PixelArea <- ifelse(dist_df$close, dist_df$PixelArea, 0)
+
+            # sum up the areas and add the total number of plaques to the output df
+            out_df <- dist_df %>% 
+                group_by(Var1) %>% 
+                summarise(Area = sum(PixelArea)) %>% 
+                as.data.frame()
+            out_df$Number <- as.numeric(bc_totals)
+            rownames(out_df) <- as.character(out_df$Var1)
+            out_df <- out_df[,-1]
+            colnames(out_df) <- paste0(cur_bid, '_', colnames(out_df))
+            out_df
+        }))
+
+        out_df$Sample <- cur_sample 
+        out_df$Slide <- cur_slide 
+        out_df$CaptureArea <- cur_capture
+        img_df <- rbind(img_df, out_df)
+
+    }
+
+    # re-name columns to match inputs:
+    colnames(img_df)[5:7] <- c(sample_col, slide_col, capture_col)
+
+    # return the dataframe
+    img_df
+
+}
+
+
+```
+
+Male vs Female sample numbers?
+
+```{r eval=FALSE}
+
+tmp <- seurat_obj@meta.data %>% dplyr::select(c(Sample, Sex, Diagnosis)) %>% distinct
+table(tmp$Sex, tmp$Diagnosis)
+
+tmp <- seurat_vis@meta.data %>% dplyr::select(c(Sample, Sex, Diagnosis)) %>% distinct
+table(tmp$Sex, tmp$Diagnosis)
+
+```
+
+
+Run CalculateSpatialDistances on the Human Visium dataset 
+
+```{r eval=FALSE}
+
+img_analysis_dir <- '/dfs7/swaruplab/smorabit/analysis/ADDS_2021/splitseq/integration/amyloid/data/VisiumImageAnalysis/human/'
+img_analysis_files <- dir(img_analysis_dir)
+img_analysis_files <- img_analysis_files[grepl('txt', img_analysis_files)]
+img_analysis_files <- paste0(img_analysis_dir, img_analysis_files)
+
+# run on the human visium dataset
+img_df <- CalculateSpatialDistances(
+    seurat_vis,
+    scale_factor = 0.42,
+    img_analysis_files = img_analysis_files
+)
+table(img_df$Sample)
+
+
+# subset the seurat object 
+seurat_vis_amyloid <- seurat_vis[,rownames(img_df)]
+
+# add the amyloid info:L
+seurat_vis_amyloid@meta.data <- cbind(seurat_vis_amyloid@meta.data, img_df[,1:4])
+
+saveRDS(seurat_vis_amyloid, file='/dfs7/swaruplab/smorabit/analysis/ADDS_2021/visium/human/amyloid/data/ADDS_seurat_processed_annotated_amyloid.rds')
+write.csv(img_df, file='/dfs7/swaruplab/smorabit/analysis/ADDS_2021/visium/human/amyloid/data/ADDS_seurat_processed_annotated_amyloid.csv', quote=FALSE)
+
+img_df <- read.csv(file='/dfs7/swaruplab/smorabit/analysis/ADDS_2021/visium/human/amyloid/data/ADDS_seurat_processed_annotated_amyloid.csv')
+
+
+
+##############################################################
+# Plot the side-by-side for each sample:
+##############################################################
+
+# load the quant files:
+quant_df <- data.frame()
+for(img_analysis_file in img_analysis_files){
+    
+    print(img_analysis_file)
+
+    # get the slide num and cap area from the file 
+    tmp <- strsplit(img_analysis_file, '/')[[1]]
+    tmp <- tmp[length(tmp)]
+    tmp <- strsplit(tmp, '_')[[1]]
+    cur_slide <- tmp[1]
+    cur_capture <- substr(tmp[2], start=1, stop=2)
+    cur_slide_cap <- paste0(cur_slide, '_', cur_capture)
+
+    # load the amyloid file:
+    quant <- read.table(img_analysis_file, sep = "\t", skip = 1, skipNul = TRUE)
+    quant <- quant[,1:7]
+
+    # give the columns names 
+    colnames(quant) <- c('row', 'Source', 'BinaryID', 'Area', 'Diameter', 'X', 'Y')
+
+    # re-name the binaryID for legibility:
+    quant$BinaryID <- ifelse(
+        grepl('OC', quant$BinaryID), 'OC', 'Amylo'
+    )
+
+    # convert to pixels based on the scale facrtor
+    quant$PixelX <- quant$X / scale_factor
+    quant$PixelY <- quant$Y / scale_factor
+    quant$PixelDiameter <- quant$Diameter / scale_factor
+    quant$PixelArea <- quant$Area / scale_factor
+
+    # add the slide info 
+    quant$Slide <- cur_slide 
+    quant$CaptureArea <- cur_capture 
+    quant$SlideCap <- cur_slide_cap 
+    
+    quant_df <- rbind(quant_df, quant)
+}
+
+samples <- unique(img_df$Sample)
+
+for(cur_sample in samples){
+
+    print(cur_sample)
+    out_df <- subset(img_df, Sample == cur_sample)
+
+    # subset visium 
+    cur_vis <- subset(seurat_vis, Sample == cur_sample)
+    cur_slide <- unique(cur_vis$Slide)
+    cur_capture <- unique(cur_vis$CaptureArea)
+
+    # subset the quant 
+    quant <- subset(quant_df, Slide == cur_slide & CaptureArea == cur_capture)
+
+    # subset old visium:
+    test <- subset(seurat_amyloid_human, Sample == cur_sample)
+
+
+
+    all.equal(rownames(out_df), colnames(cur_vis))
+    for(x in colnames(out_df)){
+        cur_vis@meta.data[,x] <- out_df[,x]
+    }
+
+        p1 <- SampleFeaturePlot(
+            cur_vis,
+            feature='Amylo_Area',
+            raster=TRUE,
+            colfunc = inferno,
+            rev_colors=TRUE,
+            dpi=300,
+            combine=FALSE
+        )
+
+        p2 <- SampleFeaturePlot(
+            cur_vis,
+            feature='Amylo_Number',
+            raster=TRUE,
+            colfunc = inferno,
+            rev_colors=TRUE,
+            dpi=300,
+            combine=FALSE
+        )
+
+
+        p3 <- SampleFeaturePlot(
+            cur_vis,
+            feature='OC_Area',
+            raster=TRUE,
+            colfunc = inferno,
+            rev_colors=TRUE,
+            dpi=300,
+            combine=FALSE
+        )
+
+        p4 <- SampleFeaturePlot(
+            cur_vis,
+            feature='OC_Number',
+            raster=TRUE,
+            colfunc = inferno,
+            rev_colors=TRUE,
+            dpi=300,
+            combine=FALSE
+        )
+
+        xrange <- range(cur_vis@meta.data$imagecol); 
+        xrange[1] <- xrange[1] - 100
+        xrange[2] <- xrange[2] + 100
+        yrange <- range(cur_vis@meta.data$imagerow)
+        yrange[1] <- yrange[1] - 100
+        yrange[2] <- yrange[2] + 100
+
+        p5 <- quant %>% subset(BinaryID == 'Amylo') %>% 
+            ggplot(aes(x=PixelX, y=PixelY, color=PixelArea)) + 
+            geom_point(inherit.aes=FALSE, data=cur_vis@meta.data, aes(x=imagecol,y=imagerow), color='grey') +
+            geom_point() +
+            scale_color_viridis() + coord_fixed() + 
+            scale_x_continuous(limits=xrange) + 
+            scale_y_continuous(limits=yrange)+ hdWGCNA::umap_theme()
+
+
+        p6 <- quant %>% subset(BinaryID == 'OC') %>% 
+            ggplot(aes(x=PixelX, y=PixelY, color=PixelArea)) + 
+            geom_point(inherit.aes=FALSE, data=cur_vis@meta.data, aes(x=imagecol,y=imagerow), color='grey') +
+            geom_point() +
+            scale_color_viridis() + coord_fixed()+ 
+            scale_x_continuous(limits=xrange) + 
+            scale_y_continuous(limits=yrange) + hdWGCNA::umap_theme()
+
+
+
+        # patch <- (p5 | p1 | p2 ) / (p6 | p3 | p4 )
+        # pdf(paste0(fig_dir, 'test_image_analysis_', cur_vis_sample, '.pdf'), width=12, height=6)
+        # print(patch)
+        # dev.off()
+
+
+        p7 <- SampleFeaturePlot(
+            test,
+            feature='Amyloglo_Score',
+            raster=TRUE,
+            colfunc = inferno,
+            rev_colors=TRUE,
+            dpi=300,
+            combine=FALSE
+        ) + ggtitle('Old Amylo Score') 
+        p8 <- SampleFeaturePlot(
+            test,
+            feature='OC_Score',
+            raster=TRUE,
+            colfunc = inferno,
+            rev_colors=TRUE,
+            dpi=300,
+            combine=FALSE
+        )+ ggtitle('Old OC Score')
+
+
+        patch <- (p5 | p1 | p2 | p7) / (p6 | p3 | p4 | p8)
+        pdf(paste0(fig_dir, 'human_image_analysis_', cur_sample, '.pdf'), width=16, height=6)
+        print(patch)
+        dev.off()
+
+}
+
+
+
+
+
+##############################################################
+# Plot the full results:
+##############################################################
+
+cur_vis <- seurat_vis[,rownames(img_df)]
+
+all.equal(rownames(img_df), colnames(cur_vis))
+for(x in colnames(img_df)){
+    cur_vis@meta.data[,x] <- img_df[,x]
+}
+
+p1 <- SampleFeaturePlot(
+    cur_vis,
+    feature='Amylo_Area',
+    sample_labels = c("Diagnosis", "Sex", 'Age'),
+    ncol = 10,
+    plot_max = 'q99',
+    raster=TRUE,
+    colfunc = inferno,
+    rev_colors=TRUE,
+    dpi=300,
+    combine=FALSE
+)
+
+p1 <- lapply(p1, function(x){
+    x + theme(
+    plot.title = element_text(face='bold', size=12, vjust=-1),
+    plot.margin = margin(0,0,0,0)
+    ) + labs(fill = paste0('Amylo Area'))
+})
+
+
+patch <- wrap_plots(p1, ncol=8, widths=1, heights=1) + plot_layout(guides='collect')
+pdf(paste0(fig_dir, 'human_image_analysis_amylo_area.pdf'), width=18, height=9)
+print(patch)
+dev.off()
+
+
+```
+
+Run CalculateSpatialDistances on the Mouse Visium dataset 
+
+```{r eval=FALSE}
+
+img_analysis_dir <- '/dfs7/swaruplab/smorabit/analysis/ADDS_2021/splitseq/integration/amyloid/data/VisiumImageAnalysis/mouse/'
+img_analysis_files <- dir(img_analysis_dir)
+img_analysis_files <- img_analysis_files[grepl('txt', img_analysis_files)]
+img_analysis_files <- paste0(img_analysis_dir, img_analysis_files)
+
+# load Seurat object
+seurat_5x <- readRDS('/dfs7/swaruplab/emiyoshi/Visium_5X/5XFAD_seurat_processed_annotated.rds')
+
+# TODO 
+mouse_img_df <- CalculateSpatialDistances(
+    seurat_5x,
+    scale_factor = 0.42,
+    img_analysis_files = img_analysis_files,
+    sample_col = 'SAMPLE',
+    slide_col = 'SlideSerial'
+)
+
+# subset the seurat object 
+seurat_5x_amyloid <- seurat_5x[,rownames(mouse_img_df)]
+
+# add the amyloid info:L
+seurat_5x_amyloid@meta.data <- cbind(seurat_5x_amyloid@meta.data, mouse_img_df[,1:4])
+
+saveRDS(seurat_5x_amyloid, file='/dfs7/swaruplab/smorabit/analysis/ADDS_2021/visium/5xFAD/amyloid/data/5XFAD_seurat_processed_annotated_amyloid.rds')
+
+write.csv(mouse_img_df, file='/dfs7/swaruplab/smorabit/analysis/ADDS_2021/visium/5xFAD/amyloid/data/5XFAD_seurat_processed_annotated_amyloid.csv', quote=FALSE)
+
+##############################################################
+# Plot the full results:
+##############################################################
+
+cur_vis <- seurat_vis[,rownames(img_df)]
+
+all.equal(rownames(img_df), colnames(cur_vis))
+for(x in colnames(img_df)){
+    cur_vis@meta.data[,x] <- img_df[,x]
+}
+
+p1 <- SampleFeaturePlot(
+    seurat_5x_amyloid,
+    feature='Amylo_Area',
+    sample_labels = c('Age', "Condition", 'Sex'),
+    sample_col = "SAMPLE",
+    ncol = 10,
+    plot_max = 'q99',
+    raster=TRUE,
+    colfunc = inferno,
+    rev_colors=TRUE,
+    dpi=300,
+    combine=FALSE
+)
+
+p1 <- lapply(p1, function(x){
+    x + theme(
+    plot.title = element_text(face='bold', size=12, vjust=-1),
+    plot.margin = margin(0,0,0,0)
+    ) + labs(fill = paste0('Amylo Area'))
+})
+
+
+patch <- wrap_plots(p1, ncol=8, widths=1, heights=1) + plot_layout(guides='collect')
+pdf(paste0(fig_dir, 'mouse_image_analysis_amylo_area.pdf'), width=12, height=4)
+print(patch)
+dev.off()
+
+
+```
+
+
+Run CalculateSpatialDistances on the snRNA-seq dataset 
+
+```{r eval=FALSE}
+
+img_analysis_dir <- '/dfs7/swaruplab/smorabit/analysis/ADDS_2021/splitseq/integration/amyloid/data/VisiumImageAnalysis/human/'
+img_analysis_files <- dir(img_analysis_dir)
+img_analysis_files <- img_analysis_files[grepl('txt', img_analysis_files)]
+img_analysis_files <- paste0(img_analysis_dir, img_analysis_files)
+
+# list of samples:
+visium_samples <- unique(anno_df$vis_sample)
+
+snRNA_img_df <- data.frame()
+for(cur_vis_sample in visium_samples){
+
+    print(cur_vis_sample)
+
+    cur_vis_meta <- subset(seurat_vis@meta.data, Sample == cur_vis_sample)
+    cur_slide <- unique(cur_vis_meta$Slide)
+    cur_capture <- unique(cur_vis_meta$CaptureArea)
+    cur_diagnosis <- as.character(unique(cur_vis_meta$Diagnosis))
+
+    # get the current image analysis file:
+    cur_img_file <- img_analysis_files[grepl(paste0(cur_slide, '_', cur_capture), img_analysis_files)]
+
+    if(length(cur_img_file) == 0){
+        print('skipping')
+        next
+    }
+
+    # get the celltrek coords and subset the snRNA seurat object
+    cur_coords <- subset(anno_df, vis_sample == cur_vis_sample)
+    cur_seurat <- seurat_obj[,cur_coords$sc_bc]
+
+   # cur_seurat <- subset(cur_seurat, Diagnosis == cur_diagnosis)
+   # rownames(cur_coords) <- cur_coords$sc_bc
+    ix <- match(colnames(cur_seurat), cur_coords$sc_bc)
+    cur_coords <- cur_coords[ix,]
+    all.equal(cur_coords$sc_bc, colnames(cur_seurat))
+   
+    # add the image info
+    cur_seurat$Slide <- cur_slide 
+    cur_seurat$CaptureArea <- cur_capture
+    cur_seurat$imagecol <- cur_coords$celltrek_1 
+    cur_seurat$imagerow <- cur_coords$celltrek_2
+
+    # add visium sample info:
+    cur_seurat$VisiumSample <- cur_vis_sample
+
+    # add spatial reduction
+    cur_seurat@reductions$spatial <- CreateDimReducObject(
+        embeddings = as.matrix(cur_coords[,c('celltrek_1', 'celltrek_2')])
+    )
+
+    # run on the human visium dataset
+    cur_img_df <- CalculateSpatialDistances(
+        cur_seurat,
+        scale_factor = 0.42,
+        img_analysis_files = cur_img_file,
+        subset_samples = FALSE, 
+        sample_col = 'VisiumSample'
+    )
+
+    # combine with the coords df:
+    all.equal(rownames(cur_img_df), cur_coords$sc_bc)
+    cur_img_df <- cbind(cur_img_df, cur_coords)
+
+    snRNA_img_df <- rbind(snRNA_img_df, cur_img_df)
+
+}
+
+write.csv(snRNA_img_df, file=paste0(data_dir, 'snRNA_Human_amyloid.csv'), quote=FALSE)
+
+
+```
+
+
+
+
+Run monocle3 GLM for DEGs based on the amyloid scores 
+
+```{r eval=FALSE}
+
+# re-load 
+snRNA_img_df <- read.csv(file=paste0(data_dir, 'snRNA_Human_amyloid.csv'))
+
+# only plot samples that have amyloid scores:
+amyloid_samples <- snRNA_img_df %>%
+  group_by(vis_sample) %>%
+  summarise(Mean = mean(Amylo_Area)) %>%
+  filter(Mean != 0) %>% .$vis_sample %>% as.character
+
+ds_samples <- subset(seurat_vis@meta.data, Diagnosis == 'AD_DS') %>% .$Sample %>% unique
+ds_samples <- ds_samples[ds_samples %in% amyloid_samples]
+
+
+
+cur_vis_sample <- ds_samples[1]
+
+# get the celltrek coords and subset the snRNA seurat object
+cur_coords <- subset(snRNA_img_df, vis_sample == cur_vis_sample)
+cur_seurat <- seurat_obj[,cur_coords$sc_bc]
+cur_seurat <- subset(cur_seurat, Diagnosis == 'DSAD')
+
+# cur_seurat <- subset(cur_seurat, Diagnosis == cur_diagnosis)
+# rownames(cur_coords) <- cur_coords$sc_bc
+ix <- match(colnames(cur_seurat), cur_coords$sc_bc)
+cur_coords <- cur_coords[ix,]
+all.equal(cur_coords$sc_bc, colnames(cur_seurat))
+
+# add the image info
+cur_seurat$imagecol <- cur_coords$celltrek_1 
+cur_seurat$imagerow <- cur_coords$celltrek_2
+cur_seurat$Amylo_Area <- cur_coords$Amylo_Area
+cur_seurat$OC_Area <- cur_coords$OC_Area
+
+# add visium sample info:
+cur_seurat$VisiumSample <- cur_vis_sample
+
+# add spatial reduction
+cur_seurat@reductions$spatial <- CreateDimReducObject(
+    embeddings = as.matrix(cur_coords[,c('celltrek_1', 'celltrek_2')])
+)
+
+
+
+library(monocle3)
+library(tictoc)
+
+
+clusters <- levels(cur_seurat$cell_identity)
+clusters <- clusters[clusters != 'unknown']
+
+cur_cluster <- 'EX L3-5'
+expr_proportion <- 0.05
+
+
+# make a new CDS with just the RNA-seq data in order to do t-DEGs:
+deg_list <- list()
+#for(cur_cluster in clusters){
+
+  print(cur_cluster)
+
+  expr_matrix  <- GetAssayData(
+    subset(cur_seurat, cell_identity== cur_cluster),
+    slot='data',
+  )
+
+  tmp <- expr_matrix > 0
+  tmp <- Matrix::rowSums(tmp) / ncol(expr_matrix)
+  test_genes <- names(which(tmp > expr_proportion))
+
+  # create celldataset object
+  cds <- new_cell_data_set(
+    expr_matrix[test_genes,],
+    cell_metadata=cur_seurat@meta.data[colnames(expr_matrix),]
+  )
+  print(dim(cds))
+
+  # identify amylo hotspot DEGs
+  gene_fits <- monocle3::fit_models(
+    cds,
+    model_formula_str = "~Amylo_Area + Sample + nCount_RNA",
+    verbose=FALSE,
+    cores=1
+  )
+
+  fit_coefs <- coefficient_table(gene_fits)
+
+  degs <- fit_coefs %>% filter(term == "Amylo_Area") %>% select(gene_id, term, p_value, q_value, test_val, std_err, estimate, normalized_effect)
+
+  degs$group <- cur_cluster
+  deg_list[[cur_cluster]] <- degs
+
+#}
+
+degs <- do.call(rbind, deg_list)
+
+
+```
+
+Try to run Voyager on one of the mapped samples? 
+
+```{r eval=FALSE}
+
+library(SpatialFeatureExperiment)
+library(SpatialExperiment)
+library(Voyager)
+library(sf)
+
+
+
+
+
+# re-load 
+snRNA_img_df <- read.csv(file=paste0(data_dir, 'snRNA_Human_amyloid.csv'))
+
+# only plot samples that have amyloid scores:
+amyloid_samples <- snRNA_img_df %>%
+  group_by(vis_sample) %>%
+  summarise(Mean = mean(Amylo_Area)) %>%
+  filter(Mean != 0) %>% .$vis_sample %>% as.character
+
+ds_samples <- subset(seurat_vis@meta.data, Diagnosis == 'AD_DS') %>% .$Sample %>% unique
+ds_samples <- ds_samples[ds_samples %in% amyloid_samples]
+
+cur_vis_sample <- ds_samples[1]
+
+# get the celltrek coords and subset the snRNA seurat object
+cur_coords <- subset(snRNA_img_df, vis_sample == cur_vis_sample)
+cur_seurat <- seurat_obj[,cur_coords$sc_bc]
+cur_seurat <- subset(cur_seurat, Diagnosis == 'AD_DS')
+
+# cur_seurat <- subset(cur_seurat, Diagnosis == cur_diagnosis)
+# rownames(cur_coords) <- cur_coords$sc_bc
+ix <- match(colnames(cur_seurat), cur_coords$sc_bc)
+cur_coords <- cur_coords[ix,]
+all.equal(cur_coords$sc_bc, colnames(cur_seurat))
+
+# add the image info
+cur_seurat$imagecol <- cur_coords$celltrek_1 
+cur_seurat$imagerow <- cur_coords$celltrek_2
+cur_seurat$Amylo_Area <- cur_coords$Amylo_Area
+cur_seurat$OC_Area <- cur_coords$OC_Area
+
+# add visium sample info:
+cur_seurat$VisiumSample <- cur_vis_sample
+
+# add spatial reduction
+cur_seurat@reductions$spatial <- CreateDimReducObject(
+    embeddings = as.matrix(cur_coords[,c('celltrek_1', 'celltrek_2')])
+)
+
+
+
+cur_coords <- dplyr::select(cur_coords, c(sc_bc, celltrek_1, celltrek_2)) %>%
+    dplyr::rename(barcode=sc_bc, col=celltrek_1, row=celltrek_2)
+
+meta <- cbind(cur_coords,cur_seurat@meta.data)
+
+X <- GetAssayData(cur_seurat, slot='counts')
+
+sfe <- SpatialFeatureExperiment(
+    list(counts=X),
+    colData = meta,
+    spatialCoordsNames = c('col', 'row')
+)
+
+
+
+
+
+
+data("visium_row_col")
+coords1 <- visium_row_col[visium_row_col$col < 6 & visium_row_col$row < 6,]
+coords1$row <- coords1$row * sqrt(3)
+
+# Random toy sparse matrix
+set.seed(29)
+col_inds <- sample(1:13, 13)
+row_inds <- sample(1:5, 13, replace = TRUE)
+values <- sample(1:5, 13, replace = TRUE)
+mat <- sparseMatrix(i = row_inds, j = col_inds, x = values)
+colnames(mat) <- coords1$barcode
+rownames(mat) <- sample(LETTERS, 5)
+
+sfe3 <- SpatialFeatureExperiment(list(counts = mat), colData = coords1,
+                                spatialCoordsNames = c("col", "row"),
+                                spotDiameter = 0.7)
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Plot all mapped cells in representative samples
+
+```{r eval=FALSE}
+
+ex_neurons <- c(
+  'EX L2', 'EX L2-3', 'EX L3-5', 'EX L5', 'EX L5-6', 'EX L6')
+
+inh_neurons <- c(
+  'INH VIP+', 'INH', 'INH LAMP5+', 'INH PVALB+', 'INH SST+')
+
+glia <- c(
+  'ASC1', 'ASC2', 'ASC3', 'ASC4',
+  'MG1', 'MG2',
+  'ODC1', 'ODC2', 'ODC3',
+  'OPC1', 'OPC2', 'OPC3'
+)
+vasc <- c(
+  'END Arterial', 'END Capillary',
+  'T-Pericyte', 'M-Pericyte', 'SMC',
+  'Perivascular Fibroblast', 'Meningeal Fibroblast'
+)
+
+group_list <- list(
+  EX = ex_neurons,
+  INH = inh_neurons,
+  glia = glia,
+  VASC = vasc
+)
+
+# get sc coordinates for the current visium sample
+plot_list <- list()
+for(i in 1:length(human_rep_samples)){
+
+  cur_vis_sample <- human_rep_samples[i]
+  print(cur_vis_sample)
+  plot_list <- list()
+  for(cur_group in names(group_list)){
+    cur_coords <- subset(anno_df, vis_sample == cur_vis_sample & cell_identity %in% group_list[[cur_group]])
+
+    # plot the main dataset
+    p <- cur_coords %>%
+      ggplot(aes(x=celltrek_1, y=celltrek_2, color=cell_identity)) +
+      ggrastr::rasterise(geom_point(size=1, alpha=1), dpi=300, scale=0.5) +
+      scale_color_manual(values=cp) +
+      umap_theme() + coord_fixed() +
+      guides(colour = guide_legend(override.aes = list(size=5))) +
+      NoLegend()
+
+    plot_list[[cur_group]] <- p
+  }
+
+  pdf(paste0(fig_dir, 'rep_samples_mapped/', human_rep_samples[i],'.pdf'), width=12, height=3)
+  print(wrap_plots(plot_list, ncol=4))
+  dev.off()
+
+}
+
+pdf(paste0(fig_dir, 'rep_samples_mapped_cell_ids.pdf'), width=18, height=3)
+print(wrap_plots(plot_list, ncol=8))
+dev.off()
+
+
+```
+

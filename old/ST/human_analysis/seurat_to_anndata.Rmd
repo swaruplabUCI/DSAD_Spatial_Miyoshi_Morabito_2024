@@ -1,0 +1,22 @@
+
+```{r eval=FALSE}
+
+library(Seurat)
+
+setwd("/dfs7/swaruplab/smorabit/analysis/ADDS_2021/visium/human/")
+
+fig_dir <- "figures/"
+data_dir <- "data/"
+
+seurat_human <- readRDS(paste0(data_dir,'ADDS_seurat_processed.rds'))
+
+# counts matrix:
+X <- GetAssayData(seurat_human, slot='counts')
+Matrix::writeMM(X, file = paste0(data_dir, 'ADDS_seurat_processed_counts.mtx'))
+
+# metadata 
+meta <- seurat_human@meta.data 
+write.table(meta, sep='\t', quote=FALSE, file=paste0(data_dir, 'ADDS_seurat_processed_meta.tsv'))
+
+
+```

@@ -1,0 +1,69 @@
+#!/bin/bash
+#SBATCH --job-name=split
+#SBATCH -p standard
+#SBATCH -A mblurton_lab
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=32
+#SBATCH --error=slurm-%J.err
+#SBATCH --mem 200G
+#SBATCH --array=4
+#SBATCH --time=36:00:00
+
+# conda init bash
+# conda activate splitseq
+
+# activate conda env:
+source ~/.bashrc
+conda activate splitseq
+
+module load samtools
+module load star
+
+cd /dfs3b/swaruplab/smorabit/data/ADDS_2021/
+
+# set data and reference directories
+fastqs="./expdata/Batch2/"
+ref_dir="./genomes/hg38/"
+
+let index="$SLURM_ARRAY_TASK_ID"
+
+# find current sublibrary
+sublibraries=($(ls $fastqs | cut -d '_' -f 1-3 | uniq))
+sample=${sublibraries[$index]}
+echo $sample
+
+# make output dir for this sample
+mkdir ./analysis/Batch2/$sample
+
+splitpipe/split-pipe \
+  --mode all \
+  --nthreads 32 \
+  --genome_dir $ref_dir \
+  --fq1 $fastqs$sample"_L002_R1_001.fastq.gz" \
+  --fq2 $fastqs$sample"_L002_R2_001.fastq.gz" \
+  --output_dir analysis/Batch2/$sample \
+  --sample 78 A1-A2 \
+  --sample 75 A3-A4 \
+  --sample 57 A5-A6 \
+  --sample 91 A7-A8 \
+  --sample 108 A9-A10 \
+  --sample 9 A11-A12 \
+  --sample 88 B1-B2 \
+  --sample 135 B3-B4 \
+  --sample 21 B5-B6 \
+  --sample 6 B7-B8 \
+  --sample 41 B9-B10 \
+  --sample 40 B11-B12 \
+  --sample 131 C1-C2 \
+  --sample 71 C3-C4 \
+  --sample 105 C5-C6 \
+  --sample 84 C7-C8 \
+  --sample 119 C9-C10 \
+  --sample 27 C11-C12 \
+  --sample 112 D1-D2 \
+  --sample 100 D3-D4 \
+  --sample 125 D5-D6 \
+  --sample 103 D7-D8 \
+  --sample 117 D9-D10 \
+  --sample 15 D11-D12 \

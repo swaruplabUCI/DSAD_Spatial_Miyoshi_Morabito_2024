@@ -1,0 +1,22 @@
+
+```{r eval=FALSE}
+
+library(Seurat)
+
+setwd("/dfs7/swaruplab/smorabit/analysis/ADDS_2021/visium/5xFAD/")
+
+fig_dir <- "figures/"
+data_dir <- "data/"
+
+seurat_5x <- readRDS('/dfs7/swaruplab/emiyoshi/Visium_5X/5XFAD_seurat_processed_annotated.rds')
+
+# counts matrix:
+X <- GetAssayData(seurat_5x, slot='counts')
+Matrix::writeMM(X, file = paste0(data_dir, '5xFAD_seurat_processed_counts.mtx'))
+
+# metadata 
+meta <- seurat_5x@meta.data 
+write.table(meta, sep='\t', quote=FALSE, file=paste0(data_dir, '5xFAD_seurat_processed_meta.tsv'))
+
+
+```

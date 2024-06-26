@@ -1,0 +1,29 @@
+#!/bin/bash
+#SBATCH --job-name=download
+#SBATCH -p standard
+#SBATCH -A vswarup_lab
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=1
+#SBATCH --error=slurm-%J.err
+#SBATCH --mem 4G
+#SBATCH --array=1-68
+#SBATCH --time=4:00:00
+
+# get a file with all of the paths (don't run this in the batch script, just run it before!!)
+# cd /dfs3b/swaruplab/smorabit/data/ADDS_2021/visium/Dec_21_2021
+#wget --spider -r --no-parent  https://hts.igb.uci.edu/emiyoshi21122192 2>&1 | grep .fastq | grep -v Removing | tr -s ' ' | cut -d ' ' -f 3 > ../bin/download_filepaths_Dec_21_2021.txt
+
+# output directory
+output_dir="/dfs3b/swaruplab/smorabit/data/ADDS_2021/visium/Dec_21_2021/fastqs/"
+cd $output_dir
+
+# set index to the slurm task ID
+let index="$SLURM_ARRAY_TASK_ID"
+
+# get the current file to download from the filepaths txt file:
+file=$(head -n $index /dfs3b/swaruplab/smorabit/data/ADDS_2021/visium/bin/download_filepaths_Dec_21_2021.txt | tail -n 1)
+echo $file
+
+# download the file!!!
+wget $file

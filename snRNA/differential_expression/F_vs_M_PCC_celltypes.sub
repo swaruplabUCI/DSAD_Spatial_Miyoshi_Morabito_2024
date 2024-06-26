@@ -1,0 +1,55 @@
+#!/bin/bash
+#SBATCH --job-name=DXMarkers
+#SBATCH -p highmem
+#SBATCH -A seyedam_lab
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=32
+#SBATCH --error=slurm-%J.err
+#SBATCH --mem 256G
+#SBATCH --array=1-10
+#SBATCH --time=24:00:00
+
+source ~/.bash_profile
+conda activate seurat
+
+# seurat object path:
+seurat="/pub/smorabit/for_fairlie/ADDS/data/ADDS_subset.rds"
+outdir="/dfs8/pub/freese/mortazavi_lab/data/ADDS_2021/splitseq/F_v_M_PCC_celltypes/"
+type="conditions"
+condition="Sex"
+cluster="cell_type"
+latent="Batch,nCount_RNA,PMI"
+subset_col="Tissue"
+subset_groups="PCC"
+
+mkdir $outdir
+
+################################################################################
+# F vs M
+################################################################################
+
+name="F_v_M"
+group1="F"
+group2="M"
+
+# launch R script:
+Rscript --vanilla /dfs8/pub/freese/mortazavi_lab/data/ADDS_2021/parallel_DEGs.R \
+  --seurat $seurat \
+  --outdir $outdir \
+  --type $type \
+  --cluster $cluster \
+  --condition $condition \
+  --name $name \
+  --index $SLURM_ARRAY_TASK_ID \
+  --group1 $group1 \
+  --group2 $group2 \
+  --test "MAST" \
+  --pos "FALSE" \
+  --pct 0 \
+  --logfc 0 \
+  --verbose "TRUE" \
+  --latent $latent \
+  --cores 32 \
+  --subset-col=$subset_col \
+  --subset-groups=$subset_groups

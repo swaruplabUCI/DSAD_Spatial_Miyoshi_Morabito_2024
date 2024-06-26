@@ -1,0 +1,288 @@
+
+
+
+Load the dataset
+
+```{r eval=FALSE}
+
+library(Seurat)
+library(tidyverse)
+library(cowplot)
+library(Matrix)
+library(viridis)
+library(harmony)
+library(ggpubr)
+library(patchwork)
+library(RColorBrewer)
+library(ggrepel)
+library(CellTrek)
+library(CellChat)
+library(ggplot2)
+library(cowplot)
+library(liana)
+library(magrittr)
+library(tictoc)
+theme_set(theme_cowplot())
+
+source('/dfs7/swaruplab/smorabit/analysis/scWGCNA/bin/spatial_functions.R')
+
+
+# 2,000 MB limit:
+options(future.globals.maxSize= 2000*1024^2)
+
+
+setwd("/dfs7/swaruplab/smorabit/analysis/ADDS_2021/splitseq/integration/liana/")
+
+fig_dir <- "figures/"
+data_dir <- "data/"
+
+seurat_obj <- readRDS(file='/dfs7/swaruplab/smorabit/analysis/ADDS_2021/splitseq/integration/data/ADDS_for_cellchat.rds')
+
+
+```
+
+
+re-load processed cellchat objects:
+
+```{r eval=FALSE}
+
+library(CellChat)
+
+cellchat_data_dir <- '/dfs7/swaruplab/smorabit/analysis/ADDS_2021/splitseq/integration/spatial_mapping/data/'
+
+cellchat_list <- list()
+conditions <- seurat_obj$DX %>% unique %>% as.character
+for(cond in conditions){
+  cellchat_list[[cond]] <- readRDS(paste0(cellchat_data_dir, gsub(' ', '_', cond), '_cellchat.rds'))
+}
+
+for (i in 1:length(cellchat_list)) {
+  cellchat_list[[i]] <- netAnalysis_computeCentrality(cellchat_list[[i]])
+}
+
+
+# merge into one object
+cellchat <- mergeCellChat(cellchat_list, add.names = names(cellchat_list))
+
+cellchat <- readRDS(file = "/dfs7/swaruplab/smorabit/analysis/ADDS_2021/splitseq/integration/data/ADDS_cellchat.rds")
+
+# re-load cellchat DE table
+net <- read.table(file=paste0(cellchat_data_dir, 'cellchat_DLRs.tsv'), sep='\t', header=1)
+net.up <- subsetCommunication(cellchat, net = net, datasets = "DSAD",ligand.logFC = 0.2, receptor.logFC = NULL)
+net.down <- subsetCommunication(cellchat, net = net, datasets = "Control", ligand.logFC = -0.1, receptor.logFC = -0.1)
+
+
+cellchat_list[[1]]@net$count %>% dim
+
+```
+
+Run Liana 
+
+Honestly it is not clear how Liana is supposed to be comparable to cellchat?
+It does not seem that Liana does differential ccc analysis between conditions 
+like cellchat does...
+
+```{r eval=FALSE}
+
+#--------------------------------------------------------------------#
+# AD / DS
+#--------------------------------------------------------------------#
+
+seurat_subset <- subset(seurat_obj, Diagnosis == 'DSAD')
+
+# takes 2 hours to run 
+tic()
+liana_results <- liana_wrap(
+    seurat_subset,
+    idents_col = 'cellchat_anno'
+)
+time_elapsed <- toc()
+
+saveRDS(liana_results, file=paste0(data_dir, 'liana_results_ADDS.rds'))
+
+#--------------------------------------------------------------------#
+# Control 
+#--------------------------------------------------------------------#
+
+seurat_subset <- subset(seurat_obj, Diagnosis == 'Control')
+
+# takes 2 hours to run 
+tic()
+liana_results <- liana_wrap(
+    seurat_subset,
+    idents_col = 'cellchat_anno'
+)
+time_elapsed <- toc()
+
+saveRDS(liana_results, file=paste0(data_dir, 'liana_results_Control.rds'))
+
+# re-load the results:
+liana_results <- readRDS(file=paste0(data_dir, 'liana_results_Control.rds'))
+
+liana_results <- liana_results %>%
+  liana_aggregate()
+
+
+p <- liana_results %>%
+  liana_dotplot(source_groups = c("ASC1 Lower"),
+                target_groups = unique(seurat_obj$cellchat_anno),
+                ntop = 20)
+
+pdf(paste0(fig_dir, 'test_liana_dotplot.pdf'), width=15, height=15)
+p
+dev.off()
+
+
+liana_trunc <- liana_results %>%
+   # only keep interactions concordant between methods
+  filter(aggregate_rank <= 0.01) # note that these pvals are already corrected
+
+p <- heat_freq(liana_trunc)
+
+pdf(paste0(fig_dir, 'test_liana_heatmap.pdf'), width=15, height=15)
+p
+dev.off()
+
+
+
+
+```
+
+run LIANA with all of the methods
+
+```{r eval=FALSE}
+
+#-------------------------------------------------------------------#
+# AD/DS
+#--------------------------------------------------------------------#
+
+
+seurat_subset <- subset(seurat_obj, Diagnosis == 'DSAD')
+
+# even though it ran it actually does give an error, FML
+tic()
+liana_results <- liana_wrap(
+    seurat_subset,
+    idents_col = 'cellchat_anno',
+    method = show_methods() # run it with all methods
+)
+time_elapsed <- toc()
+
+saveRDS(liana_results, file=paste0(data_dir, 'liana_results_ADDS_allmethods.rds'))
+
+
+
+#--------------------------------------------------------------------#
+# Control 
+#--------------------------------------------------------------------#
+
+seurat_subset <- subset(seurat_obj, Diagnosis == 'Control')
+
+#takes 14 hours to run 
+tic()
+liana_results <- liana_wrap(
+    seurat_subset,
+    idents_col = 'cellchat_anno',
+    method = show_methods() # run it with all methods
+)
+time_elapsed <- toc()
+
+saveRDS(liana_results, file=paste0(data_dir, 'liana_results_Control_allmethods.rds'))
+
+
+# re-load with all methods
+liana_results_all <- readRDS(paste0(data_dir, 'liana_results_Control_allmethods.rds'))
+
+
+# which one of the liana outputs did not work
+
+names(liana_results_all)
+class(liana_results_all[['sca']])
+head(liana_results_all[['sca']])
+head(liana_results_all[['call_sca']])
+
+
+```
+
+
+Test plotting some liana stuff 
+
+```{r eval=FALSE}
+
+name <- 'Control'
+name <- 'ADDS'
+
+cur_cellchat <- cellchat_list[[name]]
+liana_results <- readRDS(paste0(data_dir, 'liana_results_', name,'.rds'))
+
+# aggregate results across methods for LIANA
+liana_aggr <- liana_results %>%
+  liana_aggregate()
+
+# subset to significant results
+liana_trunc <- liana_aggr %>%
+  filter(aggregate_rank <= 0.05) # note that these pvals are already corrected
+  
+# get the interaction frequencies
+liana_freqs <- liana:::.get_freq(liana_trunc)
+liana_df <- reshape2::melt(liana_freqs)
+
+# get the cellchat interaction frequencies
+cellchat_freqs <- cur_cellchat@net$count
+cellchat_df <- reshape2::melt(cellchat_freqs)
+liana_df$cellchat_value <- cellchat_df$value
+
+# make a dataframe for plotting
+plot_df <- liana_df 
+plot_df %<>% dplyr::rename(c("sender" = Var1, "receiver" = Var2, "liana_value" = value))
+
+# color scheme (same as cellchat plots)
+colors.use <- scPalette(ncol(liana_freqs))
+names(colors.use) <- colnames(liana_freqs)
+
+p <- plot_df %>%
+    ggplot(aes(x = cellchat_value, y = liana_value, color=receiver)) + 
+    geom_point() + 
+    geom_smooth(
+        inherit.aes=FALSE,
+        data = plot_df,
+        aes(x=cellchat_value, y=liana_value),
+        method='lm',
+        color='black'
+    ) +
+    ggpubr::stat_cor(
+        inherit.aes=FALSE,
+        data=plot_df, 
+        label.y.npc="top", label.x.npc = "left", method='pearson',
+        aes(x=cellchat_value, y=liana_value, label=..r.label..)
+    ) + 
+    scale_color_manual(values=colors.use) +
+    xlab('CellChat Interaction Frequency') + 
+    ylab('LIANA Interaction Frequency') +
+    #NoLegend() + 
+      theme(
+        axis.line.x = element_blank(),
+        axis.line.y = element_blank(),
+        panel.border = element_rect(linewidth=1, color='black', fill=NA),
+        plot.title = element_text(hjust=0.5),
+        panel.grid = element_line(size=0.25, color='lightgrey'),
+        plot.margin = margin(c(0,0,0,0))
+    ) 
+
+
+pdf(paste0(fig_dir, 'liana_cellchat_compare_', name, '.pdf'), width=18, height=16)
+p + facet_wrap(~sender, ncol=7, scales='free') 
+dev.off()
+
+
+plot_df %>% group_by(sender) %>%
+    summarise(cor = cor(cellchat_value, liana_value)) %>% .$cor %>% quantile
+
+
+gg1 <- netVisual_heatmap(cellchat,   color.heatmap = c('seagreen', 'darkorchid4' ))
+g <- ggplot_build(gg1)
+
+
+
+
+```

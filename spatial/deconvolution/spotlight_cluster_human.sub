@@ -1,0 +1,51 @@
+#!/bin/bash
+#SBATCH --job-name=SL-Human
+#SBATCH -p highmem
+#SBATCH -A vswarup_lab
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=4
+#SBATCH --error=slurm-%J.err
+#SBATCH --mem 300G
+#SBATCH --array=1-39 # this should be the number of Visium samples
+#SBATCH --time=8:00:00
+
+source ~/.bashrc
+conda activate cicero
+
+# seurat object path:
+seurat_sc="/dfs7/swaruplab/smorabit/analysis/ADDS_2021/splitseq/integration/data/ADDS_integrated.rds"
+seurat_vis="/dfs7/swaruplab/smorabit/analysis/ADDS_2021/visium/human/data/ADDS_seurat_processed.rds"
+
+# name of the "Sample" column in the seurat visium dataset
+sample_col="Sample"
+
+# output directory
+outdir="/dfs7/swaruplab/smorabit/analysis/ADDS_2021/visium/human/deconvolution/cluster/"
+
+# marker genes
+markers="/dfs7/swaruplab/smorabit/analysis/ADDS_2021/splitseq/DEGs/data/cluster_markers.csv"
+markers="/dfs7/swaruplab/smorabit/analysis/ADDS_2021/splitseq/integration/DEGs/combined/cluster_markers.csv"
+cluster_name="cell_identity"
+
+# marker gene filtering:
+top_n=100
+logfc=0.5
+
+# additional spotlight settings:
+n_hvg=3000
+n_cells=1000
+
+# launch R script:
+Rscript --vanilla /dfs7/swaruplab/smorabit/analysis/ADDS_2021/bin/spotlight_parallel.R \
+    --seurat-sc $seurat_sc \
+    --seurat-vis $seurat_vis \
+    --markers $markers \
+    --outdir $outdir \
+    --index $SLURM_ARRAY_TASK_ID \
+    --cluster-name $cluster_name \
+    --sample-col $sample_col \
+    --topn $top_n \
+    --logfc $logfc \
+    --n-hvg $n_hvg \
+    --n-cells $n_cells

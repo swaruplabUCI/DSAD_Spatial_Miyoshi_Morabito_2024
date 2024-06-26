@@ -1,0 +1,52 @@
+#!/bin/bash
+#SBATCH --job-name=Dx12mo
+#SBATCH -p standard
+#SBATCH -A vswarup_lab
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=32
+#SBATCH --error=slurm-%J.err
+#SBATCH --mem 128G
+#SBATCH --array=1-15
+#SBATCH --time=12:00:00
+
+source ~/.bash_profile
+conda activate hdWGCNA
+
+# seurat object path:
+seurat="/dfs7/swaruplab/smorabit/analysis/ADDS_2021/visium/5xFAD/data/5XFAD_seurat_processed_annotated_102723.rds"
+outdir="/dfs7/swaruplab/smorabit/analysis/ADDS_2021/visium/5xFAD/DEGs/sex/12mo/"
+type="conditions"
+condition="Group_Sex"
+cluster="annotation"
+latent="nCount_Spatial,seqbatch"
+
+mkdir $outdir
+
+################################################################################
+# F vs M
+################################################################################
+
+name="F_v_M"
+group1="12mo-5X-F"
+group2="12mo-5X-M"
+
+# launch R script:
+Rscript --vanilla /dfs7/swaruplab/smorabit/analysis/ADDS_2021/bin/parallel_DEGs.R \
+  --seurat $seurat \
+  --outdir $outdir \
+  --type $type \
+  --cluster $cluster \
+  --condition $condition \
+  --name $name \
+  --index $SLURM_ARRAY_TASK_ID \
+  --group1 $group1 \
+  --group2 $group2 \
+  --test "MAST" \
+  --pos "FALSE" \
+  --pct 0 \
+  --logfc 0 \
+  --verbose "TRUE" \
+  --latent $latent \
+  --cores 32 \
+  --assay "Spatial"

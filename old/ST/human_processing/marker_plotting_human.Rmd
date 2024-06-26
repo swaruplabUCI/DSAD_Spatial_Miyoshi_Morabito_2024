@@ -1,0 +1,274 @@
+
+```{r eval=FALSE}
+
+# conda activate cicero
+library(Seurat)
+library(harmony)
+library(tidyverse)
+library(cowplot)
+library(patchwork)
+library(RColorBrewer)
+library(tictoc)
+library(BayesSpace)
+library(scater)
+
+colfunc <- colorRampPalette(rev(brewer.pal(11, 'Spectral' )))
+theme_set(theme_cowplot())
+
+setwd("/dfs3b/swaruplab/smorabit/analysis/ADDS_2021/visium/human/")
+
+fig_dir <- "figures/"
+data_dir <- "data/"
+
+
+umap_theme <- theme(
+  axis.line=element_blank(),
+  axis.text.x=element_blank(),
+  axis.text.y=element_blank(),
+  axis.ticks=element_blank(),
+  axis.title.x=element_blank(),
+  axis.title.y=element_blank(),
+  panel.background=element_blank(),
+  panel.border=element_blank(),
+  panel.grid.major=element_blank(),
+  panel.grid.minor=element_blank(),
+  plot.background=element_blank()
+)
+
+# re-load seurat obj & BayesSpace object:
+seurat_obj <- readRDS(paste0(data_dir,'ADDS_seurat_processed.rds'))
+
+```
+
+```{r eval=FALSE}
+
+
+#Combine individual DEG tables into one big table:
+DEG_dir <- "/dfs3b/swaruplab/smorabit/analysis/ADDS_2021/visium/human/DEGs/"
+DEG_tests <- dir(DEG_dir)[grepl("cluster_markers", dir(DEG_dir))]
+
+for(cur_test in DEG_tests){
+
+  cur_dir <- paste0(DEG_dir, cur_test, '/')
+  print(cur_dir)
+
+  # combine  all tests into one table:
+  combined <- Reduce(rbind, lapply(dir(cur_dir), function(file){
+    read.csv(paste0(cur_dir, file))
+  }))
+
+  write.csv(combined, file=paste0('DEGs/data/', cur_test, '.csv'), quote=FALSE, row.names=FALSE)
+
+}
+
+```
+
+
+cluster marker gene heatmap:
+
+```{r eval=FALSE}
+
+setwd("/dfs3b/swaruplab/smorabit/analysis/ADDS_2021/visium/human/DEGs/")
+
+dir('data/')
+
+DEG_dir <- "/dfs3b/swaruplab/smorabit/analysis/ADDS_2021/visium/human/DEGs/"
+DEG_tests <- dir(DEG_dir)[grepl("cluster_markers", dir(DEG_dir))]
+
+for(cur_test in DEG_tests){
+
+  print(cur_test)
+
+
+  dir.create(paste0(fig_dir, cur_test))
+
+  # read combined
+  degs <- read.csv(paste0(DEG_dir, 'data/', cur_test, '.csv'))
+  degs$group <- factor(
+    degs$group,
+    levels = 1:length(unique(degs$group))
+  )
+
+  # cluster_name
+  cluster_name <- paste0('bs.q', str_split(cur_test, '_')[[1]][3])
+
+  ##############################################################################
+  # plot marker gene heatmap
+  ##############################################################################
+
+
+  n_degs <- 10
+  plot_genes <- degs %>%
+    arrange(group) %>%
+    subset(p_val_adj <= 0.05) %>%
+    group_by(group) %>%
+    top_n(n_degs, wt=avg_log2FC)  %>%
+    .$gene
+
+
+  # set random seed
+  set.seed(42)
+
+  seurat_obj$barcode <- colnames(seurat_obj)
+  temp <- table(seurat_obj@meta.data$bs.q15)
+
+  df <- data.frame()
+  for(i in 1:length(temp)){
+
+    if(temp[[i]] < 500){
+      cur_df <- seurat_obj@meta.data %>% subset(bs.q15 == names(temp)[i])
+    } else{
+      cur_df <- seurat_obj@meta.data %>% subset(bs.q15 == names(temp)[i]) %>% sample_n(500)
+    }
+    df <- rbind(df, cur_df)
+  }
+
+  p <- DoHeatmap(
+    seurat_obj,
+    features=unlist(plot_genes),
+    group.by=cluster_name,
+    raster=TRUE, slot='scale.data',
+    assay='Spatial'
+  ) + theme(
+    axis.text.y = element_text(face='italic')
+  )
+
+  pdf(paste0(fig_dir, cur_test, '/marker_gene_heatmap.pdf'), width=12, height=9, useDingbats=FALSE)
+  print(p)
+  dev.off()
+
+
+
+  ##############################################################################
+  # plot marker gene heatmap
+  ##############################################################################
+
+
+  dir.create(paste0(fig_dir, cur_test, '/dotplots/'))
+
+  colfunc <- colorRampPalette(c(rev(brewer.pal(9, 'Purples' )[2:9]), 'white'))
+
+  for(cur_group in unique(degs$group)){
+
+    print(cur_group)
+    genes <- degs %>% subset(group == cur_group) %>% top_n(20, wt=avg_log2FC) %>% .$gene
+
+
+    # dimplot highlighting the current group:
+    umap_plot <- DimPlot(seurat_obj,group.by=cluster_name, cells.highlight=colnames(seurat_obj)[seurat_obj@meta.data[,cluster_name] == cur_group], label=TRUE) + NoLegend() + umap_theme+  ylab('') + xlab('') + ggtitle('')
+
+    p <- DotPlot(seurat_obj, features=genes, group.by=cluster_name, dot.min=0.15 ) +
+      RotatedAxis() +
+        scale_color_gradientn(
+        colors=rev(colfunc(256)),
+        guide = guide_colorbar(barwidth=0.5, barheight=20, ticks=FALSE, label=FALSE)
+    ) +
+      ylab('') + xlab('')
+
+    pdf(paste0(fig_dir, cur_test, '/dotplots/', gsub(' ', '_',  cur_group), '_top_genes.pdf'), width=12, height=6, useDingbats=FALSE)
+    patch <- umap_plot + p + plot_layout(widths=c(1,2))
+    print(patch)
+    dev.off()
+  }
+
+
+  ##############################################################################
+  # featureplots of top 5 genes:
+  ##############################################################################
+
+  dir.create(paste0(fig_dir, cur_test, '/featureplots/'))
+
+  print('featureplots')
+  for(cur_group in unique(degs$group)){
+    print(cur_group)
+    genes <- degs %>% subset(group == cur_group) %>% top_n(5, wt=avg_log2FC) %>% .$gene
+
+    plot_list <- list()
+    for(cur_gene in genes){
+
+      plot_list[[cur_gene]] <- FeaturePlot(
+        seurat_obj,
+        features=cur_gene,
+        reduction='spatial',
+        max.cutoff='q99',
+        raster=FALSE,
+        order=TRUE
+      ) + umap_theme +
+        scale_color_gradientn(colors=magma(256))
+    }
+
+
+
+    pdf(paste0(fig_dir, cur_test, '/featureplots/', cur_group, '_featureplot.pdf'), width=16, height=6)
+    for(p in plot_list){
+      print(p)
+    }
+    dev.off()
+  }
+
+}
+
+
+
+
+
+
+```
+
+FeaturePlot for one gene:
+
+```{r eval=FALSE}
+
+colfunc <- colorRampPalette(rev(brewer.pal(11, 'Spectral' )))
+
+
+# make a spatial "reduction"
+image_emb <- as.matrix(seurat_obj@meta.data[,c('row', 'col')])
+colnames(image_emb) <- c("Spatial_1", "Spatial_2")
+seurat_obj@reductions$spatial <- CreateDimReducObject(
+  image_emb,
+  key = 'Spatial'
+)
+
+p1 <- FeaturePlot(
+  seurat_obj,
+  features='MBP',
+  reduction='spatial',
+  order=TRUE,
+  raster=FALSE
+) + umap_theme +
+  scale_color_gradientn(colors=magma(256))
+
+
+
+p2 <- FeaturePlot(
+  seurat_obj,
+  features='SLC17A7',
+  reduction='spatial',
+  max.cutoff='q99',
+  raster=FALSE,
+  order=TRUE
+) + umap_theme +
+  scale_color_gradientn(colors=magma(256))
+
+
+
+p3 <- FeaturePlot(
+  seurat_obj,
+  features='GFAP',
+  reduction='spatial',
+  max.cutoff='q99',
+  raster=FALSE,
+  order=TRUE
+) + umap_theme +
+  scale_color_gradientn(colors=magma(256))
+
+
+
+pdf(paste0(fig_dir, 'test_featureplot.pdf'), width=16, height=6)
+p1
+p2
+p3
+dev.off()
+
+```

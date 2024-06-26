@@ -1,0 +1,1387 @@
+
+```{r eval=FALSE}
+
+library(Seurat)
+library(tidyverse)
+library(cowplot)
+library(patchwork)
+library(ggrepel)
+library(viridis)
+library(magrittr)
+library(hdWGCNA)
+theme_set(theme_cowplot())
+
+source('/dfs7/swaruplab/smorabit/analysis/scWGCNA/bin/spatial_functions.R')
+
+
+setwd("/dfs7/swaruplab/smorabit/analysis/ADDS_2021/splitseq/integration/scDRS/")
+
+fig_dir <- 'figures/'
+data_dir <- 'data/'
+
+# load ADDS + AD integrated single-cell dataset:
+#seurat_obj <- readRDS(file="/dfs7/swaruplab/smorabit/analysis/ADDS_2021/splitseq/integration/data/ADDS_AD_integrated.rds" )
+
+# load the ADDS + AD integrated with hdWGCNA info 
+seurat_obj <- readRDS(file=paste0('/dfs7/swaruplab/smorabit/analysis/ADDS_2021/visium/human/hdWGCNA/data/ADDS_AD_integrated_hdWGCNA.rds'))
+
+group_levels <- c(
+  'EX L2', 'EX L2-3', 'EX L3-5', 'EX L5', 'EX L5-6', 'EX L6',
+  'INH VIP+', 'INH', 'INH LAMP5+', 'INH PVALB+', 'INH SST+',
+  'ODC1', 'ODC2', 'ODC3',
+  'OPC1', 'OPC2', 'OPC3',
+  'MG1', 'MG2',
+  'ASC1', 'ASC2', 'ASC3', 'ASC4',
+  'END Arterial', 'END Capillary',
+  'T-Pericyte', 'M-Pericyte', 'SMC',
+  'Perivascular Fibroblast', 'Meningeal Fibroblast'
+)
+
+seurat_obj$cell_identity <- factor(as.character(seurat_obj$cell_identity), levels=group_levels)
+
+# add colors
+color_df <- read.csv(file=paste0('/dfs7/swaruplab/smorabit/analysis/ADDS_2021/splitseq/integration/data/cell_identity.csv'))
+color_df$group <- factor(color_df$group, levels=color_df$group)
+human_cp <- color_df$colour
+names(human_cp) <- color_df$group
+
+dx_cp <- c("Control" = "#B8DBC5", "earlyAD" = "#E7BDE1" , 'Early-AD' = "#E7BDE1",  "AD" = "#CF8BA3", "AD_DS" = "#9E6D7F", "DSAD" = "#9E6D7F", 'All' = 'grey20')
+
+
+```
+
+Combine the scDRS output tables for each dataset 
+
+```{r eval=FALSE}
+
+name <- 'ADDS'
+name <- 'Morabito_Miyoshi_2021'
+name <- 'Zhou_2020'
+name <- 'Mathys_2019'
+
+# get the file paths for the output files
+scdrs_output_dir <- paste0('/dfs7/swaruplab/smorabit/analysis/ADDS_2021/splitseq/integration/scDRS/data/outputs/', name,'/')
+output_files <- dir(scdrs_output_dir)
+output_files <- output_files[!grepl('full', output_files)]
+traits <- gsub(".score.gz", '', output_files)
+traits <- gsub("PASS_", '', traits)
+output_files <- paste0(scdrs_output_dir, output_files)
+
+# combine the individual tables
+scdrs_df <- do.call(rbind, lapply(1:length(traits), function(i){
+    cur_df <- read_delim(output_files[i],  delim='\t')
+    names(cur_df)[1] <- 'barcode'
+    cur_df$trait <- traits[i]
+    cur_df
+}))
+
+# write the output file:
+write.csv(scdrs_df, quote=FALSE, row.names=FALSE, file=paste0(data_dir, name,'_scDRS_results.csv'))
+
+
+
+
+```
+
+Testing a UMAP plot with the scDRS results 
+
+```{r eval=FALSE}
+
+# get the seurat object for just the AD/Ds
+cur_seurat <- subset(seurat_obj, Study == 'ADDS')
+
+# load the AD/DS results
+scdrs_df <- read_csv(file=paste0(data_dir, 'ADDS_scDRS_results.csv'))
+
+# subset for one trait (AD)
+cur_df <- subset(scdrs_df, trait == 'Alzheimers_Jansen2019')
+
+cor(cur_df$norm_score, cur_df2$norm_score)
+
+
+cur_seurat <- subset(seurat_obj, bc %in% cur_df$barcode)
+
+ix <- match(cur_df$barcode, cur_seurat$bc)
+all.equal(as.character(cur_df$barcode[ix]), as.character(cur_seurat$bc))
+
+cur_seurat$scdrs_score <- cur_df[ix,]$norm_score
+cur_seurat$scdrs_zscore <- cur_df[ix,]$zscore
+cur_seurat$scdrs_pval <- cur_df[ix,]$pval
+
+
+
+p1 <- FeatureEmbedding(
+    cur_seurat,
+    features = 'scdrs_score',
+    reduction = 'umap',
+    point_size=1,
+    plot_min = 'q0',
+    plot_max = 'q100'
+)
+
+p2 <- FeatureEmbedding(
+    cur_seurat,
+    features = 'scdrs_zscore',
+    reduction = 'umap',
+    point_size=1,
+    plot_min = 'q0',
+    plot_max = 'q100'
+)
+
+pdf(paste0(fig_dir, 'test_scdrs_umap_ADDS_AD.pdf'), width=10, height=5)
+p1 + p2
+dev.off()
+
+p1 <- VlnPlot(
+    cur_seurat, 
+    features = 'scdrs_score',
+    group.by = 'cell_identity', 
+    pt.size=0) + NoLegend()
+
+p2 <- VlnPlot(
+    cur_seurat, 
+    features = 'scdrs_zscore',
+    group.by = 'cell_identity', 
+    pt.size=0) + NoLegend()
+
+
+pdf(paste0(fig_dir, 'test_scdrs_vln_ADDS_AD.pdf'), width=10, height=6)
+p1 / p2
+dev.off()
+
+
+# which cell types had signif p-vals?
+cur_seurat$scdrs_fdr <- p.adjust(cur_seurat$scdrs_pval, method='fdr')
+signif_df <- subset(cur_seurat@meta.data, scdrs_pval < 0.05)
+(table(signif_df$cell_type) / table(cur_seurat$cell_type) * 100)
+
+
+```
+
+Function to compute cell group / disease associations 
+
+```{r eval=FALSE}
+
+
+TraitGroupAssociations <- function(
+    seurat_obj,
+    scdrs_file,
+    group.by,
+    percentile = 0.95,
+    pval_thresh = c(0.01, 0.05, 0.1)
+){
+
+    # check if "full" is in the name of the scdrs file  
+    if(!grepl("full_score", scdrs_file)){
+        warning("Please check that this is the full_score output from scDRS.")
+    }
+
+    # check that the group.by is in the Seurat object:
+    if(!(group.by %in% names(seurat_obj@meta.data))){
+        stop(paste0(group.by, ' not found in seurat_obj@meta.data'))
+    }
+
+    # load the scDRS output file
+    print('Loading scDRS output file ...')
+    scdrs_df <- read_delim(scdrs_file,  delim='\t')
+    names(scdrs_df)[1] <- 'barcode'
+
+    # compute the FDR:
+    scdrs_df$fdr <- p.adjust(scdrs_df$pval, method='fdr')
+
+    # match the barcodes with the seurat object
+   # dup_bcs <- names(which(table(seurat_obj@meta.data$bc) > 1))
+   # seurat_meta <- subset(seurat_obj@meta.data, !(bc %in% dup_bcs))
+    seurat_meta <- subset(seurat_obj@meta.data, bc %in% scdrs_df$barcode)
+    scdrs_df <- subset(scdrs_df, barcode %in% seurat_meta$bc)
+    ix <- match(seurat_meta$bc, scdrs_df$barcode)
+
+    print(dim(seurat_meta))
+    print(dim(scdrs_df))
+    print(length(ix))
+
+    all.equal(as.character(scdrs_df$barcode), as.character(seurat_meta$bc)[ix])
+
+    # add the cell cluster info
+    scdrs_df$cell_group <- as.character(seurat_meta[[group.by]][ix])
+    group_list <- unique(scdrs_df$cell_group)
+
+    # set up progress bar
+    print('Computing associations between cell groups and current trait...')
+    pb <- utils::txtProgressBar(min = 0, max = length(group_list),style = 3, width = 50, char = "=")
+    i <- 1
+
+    # loop through each cluster
+    assoc_df <- data.frame()
+    for(cur_group in group_list){
+        
+        # get the scores for this cluster
+        group_scores <- subset(scdrs_df, cell_group == cur_group)
+
+        # compute the percentile
+        score_q <- as.numeric(quantile(group_scores$norm_score, percentile))
+
+        # compute the percentile for each control score
+        control_score_q <- group_scores %>% 
+            summarise(across(starts_with("ctrl_norm_score"), .fns = ~ quantile(.x, percentile))) %>% 
+            as.numeric
+
+        # comptue p-val
+        mc_p <- (sum(control_score_q >= score_q) + 1) / (length(control_score_q) + 1)
+        mc_z <- (score_q - mean(control_score_q)) / sd(control_score_q)
+
+        # compute the proportions of cells with signif p-vals:
+        pval_props <- unlist(lapply(pval_thresh, function(thresh){
+            as.numeric(table(group_scores$pval < thresh)[2] / nrow(group_scores))
+        }))
+        names(pval_props) <- paste0('prop_p_', pval_thresh)
+        pval_props[is.na(pval_props)] <- 0
+        fdr_props <- unlist(lapply(pval_thresh, function(thresh){
+            as.numeric(table(group_scores$fdr < thresh)[2] / nrow(group_scores))
+        }))
+        names(fdr_props) <- paste0('prop_fdr_', pval_thresh)
+        fdr_props[is.na(fdr_props)] <- 0
+
+        # assemble output data for this cluster
+        cur_assoc_df <- data.frame(group = cur_group, mc_p = mc_p, mc_z = mc_z)
+        cur_assoc_df[,names(pval_props)] <- pval_props 
+        cur_assoc_df[,names(fdr_props)] <- fdr_props
+        assoc_df <- rbind(assoc_df, cur_assoc_df)
+
+        # update progress bar:
+        i <- i+ 1
+        setTxtProgressBar(pb, i)
+    }
+
+    # close progress bar
+    close(pb)
+
+    # return the resutls
+    assoc_df
+}
+
+```
+
+Compute the celltype / disease associations 
+
+
+```{r eval=FALSE}
+
+
+name <- 'ADDS'; study <- name
+name <- 'Morabito_Miyoshi_2021'; study <- 'Morabito_Miyoshi'
+name <- 'Zhou_2020'; study <- name
+name <- 'Mathys_2019'; study <- name
+
+
+scdrs_output_dir <- paste0('/dfs7/swaruplab/smorabit/analysis/ADDS_2021/splitseq/integration/scDRS/data/outputs/', name,'/')
+output_files <- dir(scdrs_output_dir)
+output_files <- output_files[grepl('full', output_files)]
+traits <- gsub(".score.gz", '', output_files)
+traits <- gsub("PASS_", '', traits)
+output_files <- paste0(scdrs_output_dir, output_files)
+
+cur_seurat <- subset(seurat_obj, Study == study)
+
+conditions <- unique(as.character(cur_seurat$Diagnosis))
+
+assoc_df <- data.frame()
+for(i in 1:length(traits)){
+    tic()
+    out <- TraitGroupAssociations(
+        seurat_obj = cur_seurat,
+        scdrs_file = output_files[i],
+        group.by = 'cell_identity',
+        percentile = 0.95
+    )
+    out$trait <- traits[i]
+    time_elapsed <- toc()
+    print(time_elapsed)
+    assoc_df <- rbind(assoc_df, out)
+}
+write.csv(assoc_df, file=paste0(data_dir, name, '_scDRS_celltype_associations.csv'))
+
+
+
+# re-load  file 
+assoc_df <- read.csv(file=paste0(data_dir, name, '_scDRS_celltype_associations.csv'))
+
+assoc_df$mc_fdr <- p.adjust(assoc_df$mc_p, method='fdr')
+
+p <- ggplot(assoc_df, aes(x=group, y=trait, fill=prop_p_0.05)) + 
+    geom_tile() + 
+    geom_point(
+        inherit.aes=FALSE,
+        data = subset(assoc_df, mc_fdr < 0.05),
+        aes(x=group, y=trait),
+        color='black', 
+        shape=0,
+        size=4,
+        fill=NA
+    ) + 
+    coord_equal() + 
+    scale_fill_steps(low='white', high='red') + 
+    RotatedAxis()
+
+pdf(paste0(fig_dir, name, '_scdrs_heatmap.pdf'), width=12, height=15)
+p
+dev.off()
+
+
+
+```
+
+Running the scDRS associations for different conditions 
+
+```{r eval=FALSE}
+
+
+name <- 'ADDS'; study <- name
+name <- 'Morabito_Miyoshi_2021'; study <- 'Morabito_Miyoshi'
+name <- 'Zhou_2020'; study <- name
+name <- 'Mathys_2019'; study <- name
+
+
+scdrs_output_dir <- paste0('/dfs7/swaruplab/smorabit/analysis/ADDS_2021/splitseq/integration/scDRS/data/outputs/', name,'/')
+output_files <- dir(scdrs_output_dir)
+output_files <- output_files[grepl('full', output_files)]
+traits <- gsub(".score.gz", '', output_files)
+traits <- gsub("PASS_", '', traits)
+output_files <- paste0(scdrs_output_dir, output_files)
+
+cur_seurat <- subset(seurat_obj, Study == study)
+
+conditions <- unique(as.character(cur_seurat$Diagnosis))
+
+assoc_df <- data.frame()
+for(j in 1:length(conditions)){
+    cur_condition <- conditions[j]
+    cur_seurat_condition <- subset(cur_seurat, Diagnosis == cur_condition)
+    for(i in 1:length(traits)){
+        out <- TraitGroupAssociations(
+            seurat_obj = cur_seurat_condition,
+            scdrs_file = output_files[i],
+            group.by = 'cell_identity',
+            percentile = 0.95
+        )
+        out$trait <- traits[i]
+        out$condition <- cur_condition
+        assoc_df <- rbind(assoc_df, out)
+    }
+}
+
+write.csv(assoc_df, file=paste0(data_dir, name, '_diagnosis_scDRS_celltype_associations.csv'))
+
+
+
+# re-load  file 
+assoc_df <- read.csv(file=paste0(data_dir, name, '_diagnosis_scDRS_celltype_associations.csv'))
+
+# add factor levels
+assoc_df$group <- factor(as.character(assoc_df$group), levels=levels(seurat_obj$cell_identity))
+
+assoc_df$mc_fdr <- p.adjust(assoc_df$mc_p, method='fdr')
+
+p <- ggplot(assoc_df, aes(x=group, y=trait, color=prop_p_0.05, size=-log10(mc_fdr))) + 
+    geom_point() + 
+    geom_point(
+        inherit.aes=FALSE,
+        data = subset(assoc_df, mc_fdr <= 0.05),
+        aes(x=group, y=trait, size=-log10(mc_fdr)),
+        color='black', 
+        shape=1,
+        #size=-log10(fdr),
+        fill=NA
+    ) + 
+    coord_equal() + 
+    scale_color_steps(low='white', high='red',
+        breaks=seq(0:10)/10) + 
+    RotatedAxis()
+
+pdf(paste0(fig_dir, name,'_scdrs_dotplot.pdf'), width=20, height=15)
+p + facet_wrap(~condition, ncol=4)
+dev.off()
+
+
+
+
+```
+
+
+Ordering of the traits in the heatmap 
+
+```{r eval=FALSE}
+
+
+blood_immune_traits <- c(
+    'CD_deLange2017', # chron's disease
+    'Celiac',
+    'IBD_deLange2017',
+    'Lupus',
+    'Multiple_sclerosis',
+    'Rheumatoid_Arthritis',
+    'Primary_biliary_cirrhosis',
+    'UC_deLange2017',
+    'Type_1_Diabetes',
+    'EOSINOPHIL_COUNT',
+    'LYMPHOCYTE_COUNT',
+    'MEAN_CORPUSCULAR_HEMOGLOBIN',
+    'MONOCYTE_COUNT',
+    'PLATELET_COUNT',
+    'RBC_DISTRIB_WIDTH',
+    'RED_COUNT',
+    'WHITE_COUNT',
+    'AID_ALL', #AID = autoimmune disease
+    'ALLERGY_ECZEMA_DIAGNOSED',
+    'ASTHMA_DIAGNOSED',
+    'HYPOTHYROIDISM_SELF_REP',
+    'RESPIRATORY_ENT'
+)
+
+brain_traits <- c(
+    'ADHD_Demontis2018',
+    'Alzheimers_Jansen2019',
+    'BIP_Mullins2021',
+    'DrinksPerWeek_Liu2019',
+    'GeneralRiskTolerance_KarlssonLinner2019',
+    'Insomnia_Jansen2019',
+    'Intelligence_SavageJansen2018',
+    'MDD_Howard2019',
+    'ReactionTime_Davies2018',
+    'SWB',
+    'Schizophrenia_Pardinas2018',
+    'SleepDuration_Dashti2019',
+    'VerbalNumericReasoning_Davies2018',
+    'EDU_COLLEGE',
+    'EDU_YEARS',
+    'NEUROTICISM',
+    'MORNINGPERSON',
+    'BMIz',
+    'SMOKING_STATUS',
+    'NumberChildrenEverBorn_Pooled',
+    'Worry_Nagel2018'
+)
+
+other_diseases <- c(
+    'Type_2_Diabetes',
+    'AtrialFibrillation_Nielsen2018',
+    'Coronary_Artery_Disease',
+    'SYSTOLICadjMEDz',
+    'DIASTOLICadjMEDz',
+    'CARDIOVASCULAR',
+    'HYPERTENSION_DIAGNOSED',
+    'FastingGlucose_Manning',
+    'AlanineAminotransferase',
+    'AlkalinePhosphatase',
+    'Cholesterol',
+    'Glucose',
+    'HDLcholesterol',
+    'HbA1c',
+    'LDLdirect',
+    'SHBG',
+    'Testosterone_Male',
+    'TotalBilirubin',
+    'TotalProtein',
+    'Triglycerides',
+    'HEEL_TSCOREz',
+    'BALDING1',
+    'HEIGHTz',
+    'WHRadjBMIz',
+    'BREAST',
+    'BASAL_METABOLIC_RATEz',
+    'FEV1FVCzSMOKE',
+    'FVCzSMOKE',
+    'HAIR',
+    'MENARCHE_AGE',
+    'MENOPAUSE_AGE'
+)
+
+
+
+traits_order <- c(brain_traits, blood_immune_traits, other_diseases)
+
+```
+
+Below block makes the final version of the heatmap that we actually use in the paper
+
+```{r eval=FALSE}
+
+
+name <- 'ADDS'; study <- name
+name <- 'Morabito_Miyoshi_2021'; study <- 'Morabito_Miyoshi'
+name <- 'Zhou_2020'; study <- name
+name <- 'Mathys_2019'; study <- name
+
+# re-load  file 
+combined_assoc_df <- read.csv(file=paste0(data_dir, name, '_scDRS_celltype_associations.csv'))
+combined_assoc_df$condition <- 'All'
+combined_assoc_df$mc_fdr <- p.adjust(combined_assoc_df$mc_p, method='fdr')
+
+# re-load  file 
+assoc_df <- read.csv(file=paste0(data_dir, name, '_diagnosis_scDRS_celltype_associations.csv'))
+assoc_df$mc_fdr <- p.adjust(assoc_df$mc_p, method='fdr')
+
+# combine
+assoc_df <- rbind(assoc_df, combined_assoc_df)
+assoc_df$group <- factor(as.character(assoc_df$group), levels=levels(seurat_obj$cell_identity))
+assoc_df$group <- droplevels(assoc_df$group)
+
+# rename for convenience
+assoc_df$trait <- gsub('UKB_460K.biochemistry_', '', assoc_df$trait)
+assoc_df$trait <- gsub('UKB_460K.blood_', '', assoc_df$trait)
+assoc_df$trait <- gsub('UKB_460K.bmd_', '', assoc_df$trait)
+assoc_df$trait <- gsub('UKB_460K.body_', '', assoc_df$trait)
+assoc_df$trait <- gsub('UKB_460K.bp_', '', assoc_df$trait)
+assoc_df$trait <- gsub('UKB_460K.cancer_', '', assoc_df$trait)
+assoc_df$trait <- gsub('UKB_460K.cov_', '', assoc_df$trait)
+assoc_df$trait <- gsub('UKB_460K.disease_', '', assoc_df$trait)
+assoc_df$trait <- gsub('UKB_460K.impedance_', '', assoc_df$trait)
+assoc_df$trait <- gsub('UKB_460K.lung_', '', assoc_df$trait)
+assoc_df$trait <- gsub('UKB_460K.mental_', '', assoc_df$trait)
+assoc_df$trait <- gsub('UKB_460K.other_', '', assoc_df$trait)
+assoc_df$trait <- gsub('UKB_460K.pigment_', '', assoc_df$trait)
+assoc_df$trait <- gsub('UKB_460K.repro_', '', assoc_df$trait)
+assoc_df$trait <- gsub('.full', '', assoc_df$trait)
+
+traits <- unique(assoc_df$trait)
+
+# add trait type:
+assoc_df$trait_type <- ifelse(assoc_df$trait %in% brain_traits, 'brain', 'other')
+assoc_df$trait_type <- ifelse(assoc_df$trait %in% blood_immune_traits, 'blood/immune', assoc_df$trait)
+
+#table(assoc_df$condition, assoc_df$trait)
+
+#------------------------------------------------------------------------#
+# different plots for each condition 
+#------------------------------------------------------------------------#
+
+plot_groups <- unique(assoc_df$condition)
+plot_groups <- c('Control', 'Early-AD', 'AD', 'All')
+plot_groups <- c('Control', 'DSAD', 'All')
+plot_groups <- c('Control', 'AD', 'All')
+
+plot_list <- list()
+for(cur_group in plot_groups){
+
+    plot_df <- subset(assoc_df, condition == cur_group)
+    plot_df$trait <- factor(as.character(plot_df$trait), levels=rev(traits_order))
+
+    p <- ggplot(plot_df, aes(x=group, y=trait, color=prop_p_0.05, size=-log10(mc_fdr))) + 
+        geom_point() + 
+        geom_point(
+            inherit.aes=FALSE,
+            data = subset(plot_df, mc_fdr <= 0.05),
+            aes(x=group, y=trait, size=-log10(mc_fdr)),
+            color='black', 
+            shape=1,
+            fill=NA
+        ) + 
+        coord_equal() + 
+          scale_color_steps(low='white', high=as.character(dx_cp[cur_group]),
+        breaks=seq(0:10)/10) + 
+        xlab('') + ylab('') +
+        ggtitle(cur_group) +
+        theme(
+            axis.line.x = element_blank(),
+            axis.line.y = element_blank(),
+            panel.border = element_rect(linewidth=1, color='black', fill=NA),
+            axis.text.x = element_blank(),
+            axis.title.x = element_blank(),
+            axis.ticks.x = element_blank(),
+            plot.title = element_text(hjust=0.5),
+            panel.grid = element_line(size=0.25, color='lightgrey'),
+            plot.margin = margin(c(0,0,0,0))
+        ) 
+
+    if(cur_group != plot_groups[1]){
+        p <- p + theme( axis.text.y = element_blank())
+    }
+
+
+    # # make the colorbar as its own heatmap
+    color_df$var <- 1
+    cp <- color_df$colour; names(cp) <- color_df$group
+    colorbar <- color_df %>% 
+        subset(group %in% assoc_df$group) %>% 
+        mutate(group = droplevels(group)) %>%
+        ggplot(aes(x=group, y=var, fill=group)) +
+        geom_tile() +
+        scale_fill_manual(values=cp) +
+        scale_size_continuous(range = c(0, max(-log10(assoc_df$mc_fdr)))) +
+        coord_equal() +
+        NoLegend() + RotatedAxis() +
+        theme(
+            plot.title=element_blank(),
+            axis.line=element_blank(),
+            axis.ticks.y =element_blank(),
+            axis.text.y = element_blank(),
+            axis.title = element_blank(),
+            plot.margin=margin(0,0,0,0),
+        )
+
+
+    patch <- p  / colorbar
+    plot_list[[cur_group]] <- patch
+
+}
+
+pdf(paste0(fig_dir, name, '_scdrs_heatmap_ordered.pdf'), width=26, height=18)
+wrap_plots(plot_list) + plot_layout(guides='collect')
+dev.off()
+
+
+# for mathys
+pdf(paste0(fig_dir, name, '_scdrs_heatmap_ordered.pdf'), width=32, height=18)
+wrap_plots(plot_list, ncol=4) + plot_layout(guides='collect')
+dev.off()
+
+
+
+
+
+```
+
+
+
+
+Make a dot plot just for AD trait 
+
+```{r eval=FALSE}
+
+dataset_names <- c('Mathys_2019', 'Zhou_2020', 'Morabito_Miyoshi_2021', 'ADDS')
+
+combined_df <- data.frame()
+for(name in dataset_names){
+
+    print(name)
+
+    # re-load  file 
+    combined_assoc_df <- read.csv(file=paste0(data_dir, name, '_scDRS_celltype_associations.csv'))
+    combined_assoc_df$condition <- 'All'
+    combined_assoc_df$mc_fdr <- p.adjust(combined_assoc_df$mc_p, method='fdr')
+
+    # re-load  file 
+    assoc_df <- read.csv(file=paste0(data_dir, name, '_diagnosis_scDRS_celltype_associations.csv'))
+    assoc_df$mc_fdr <- p.adjust(assoc_df$mc_p, method='fdr')
+
+    # combine
+    assoc_df <- rbind(assoc_df, combined_assoc_df)
+    assoc_df$group <- factor(as.character(assoc_df$group), levels=levels(seurat_obj$cell_identity))
+    assoc_df$group <- droplevels(assoc_df$group)
+
+    assoc_df$dataset <- name
+    combined_df <- rbind(combined_df, assoc_df)
+
+}
+assoc_df <- combined_df
+
+
+# rename for convenience
+assoc_df$trait <- gsub('UKB_460K.biochemistry_', '', assoc_df$trait)
+assoc_df$trait <- gsub('UKB_460K.blood_', '', assoc_df$trait)
+assoc_df$trait <- gsub('UKB_460K.bmd_', '', assoc_df$trait)
+assoc_df$trait <- gsub('UKB_460K.body_', '', assoc_df$trait)
+assoc_df$trait <- gsub('UKB_460K.bp_', '', assoc_df$trait)
+assoc_df$trait <- gsub('UKB_460K.cancer_', '', assoc_df$trait)
+assoc_df$trait <- gsub('UKB_460K.cov_', '', assoc_df$trait)
+assoc_df$trait <- gsub('UKB_460K.disease_', '', assoc_df$trait)
+assoc_df$trait <- gsub('UKB_460K.impedance_', '', assoc_df$trait)
+assoc_df$trait <- gsub('UKB_460K.lung_', '', assoc_df$trait)
+assoc_df$trait <- gsub('UKB_460K.mental_', '', assoc_df$trait)
+assoc_df$trait <- gsub('UKB_460K.other_', '', assoc_df$trait)
+assoc_df$trait <- gsub('UKB_460K.pigment_', '', assoc_df$trait)
+assoc_df$trait <- gsub('UKB_460K.repro_', '', assoc_df$trait)
+assoc_df$trait <- gsub('.full', '', assoc_df$trait)
+
+traits <- unique(assoc_df$trait)
+
+# add trait type:
+assoc_df$trait_type <- ifelse(assoc_df$trait %in% brain_traits, 'brain', 'other')
+assoc_df$trait_type <- ifelse(assoc_df$trait %in% blood_immune_traits, 'blood/immune', assoc_df$trait)
+
+
+plot_groups <- c('Control', 'Early-AD', 'AD', 'DSAD')
+cur_trait <- 'Alzheimers_Jansen2019'
+
+# get the info for this trait 
+plot_df <- subset(assoc_df, trait == cur_trait & condition != 'All' & group %in% c('MG1', 'MG2'))
+plot_df$condition <- factor(as.character(plot_df$condition), levels=plot_groups)
+
+
+
+p <- ggplot(plot_df, aes(x=group, y=condition, color=prop_p_0.05, size=-log10(mc_fdr))) + 
+    geom_point() + 
+    geom_point(
+        inherit.aes=FALSE,
+        data = subset(plot_df, mc_fdr <= 0.05),
+        aes(x=group, y=condition, size=-log10(mc_fdr)),
+        color='black', 
+        shape=1,
+        fill=NA
+    ) + 
+    coord_equal() + 
+    scale_color_steps(
+        low='white', high='red',
+        # breaks=seq(0:10)/10
+    ) + 
+    scale_size(limits = c(1, 2.5)) +
+    xlab('') + ylab('') +
+   # ggtitle(cur_group) +
+    theme(
+        axis.line.x = element_blank(),
+        axis.line.y = element_blank(),
+        panel.border = element_rect(linewidth=1, color='black', fill=NA),
+       # axis.text.x = element_blank(),
+        axis.title.x = element_blank(),
+       # axis.ticks.x = element_blank(),
+        plot.title = element_text(hjust=0.5),
+        panel.grid = element_line(size=0.25, color='lightgrey'),
+        plot.margin = margin(c(0,0,0,0))
+    ) + RotatedAxis()
+
+
+pdf(paste0(fig_dir, 'AD_scDRS_dotplot_tall.pdf'), width=3, height=6)
+p + facet_wrap(~dataset, ncol=1)
+dev.off()
+
+pdf(paste0(fig_dir, 'AD_scDRS_dotplot_wide.pdf'), width=5, height=2)
+p + facet_wrap(~dataset, ncol=4)
+dev.off()
+
+
+
+```
+
+
+Correlation with hdWGCNA MEs 
+
+```{r eval=FALSE}
+
+
+
+name <- 'ADDS'
+name <- 'Morabito_Miyoshi_2021'
+name <- 'Zhou_2020'
+name <- 'Mathys_2019'
+
+groups <- c('ADDS', 'Morabito_Miyoshi_2021', 'Zhou_2020', 'Mathys_2019')
+
+file_list <- c()
+for(name in groups){
+    # get the file paths for the output files
+    scdrs_output_dir <- paste0('/dfs7/swaruplab/smorabit/analysis/ADDS_2021/splitseq/integration/scDRS/data/outputs/', name,'/')
+    output_files <- dir(scdrs_output_dir)
+    output_files <- output_files[!grepl('full', output_files)]
+    traits <- gsub(".score.gz", '', output_files)
+    traits <- gsub("PASS_", '', traits)
+    output_files <- paste0(scdrs_output_dir, output_files)
+    output_files <- output_files[grepl('Alz', output_files)]
+    file_list <- c(file_list, output_files)
+}
+
+# combine the individual tables
+scdrs_df <- do.call(rbind, lapply(1:length(file_list), function(i){
+    cur_df <- read_delim(file_list[i],  delim='\t')
+    names(cur_df)[1] <- 'barcode'
+    cur_df$trait <- 'Alzheimers_Jansen2019'
+    cur_df
+}))
+
+
+
+
+
+scdrs_df <- subset(scdrs_df, barcode %in% seurat_obj$bc)
+
+ix <- match(seurat_obj$bc, scdrs_df$barcode)
+table(as.character(scdrs_df$barcode)[ix] == as.character(seurat_obj$bc))
+
+seurat_obj$scdrs_score <- scdrs_df[ix,]$norm_score
+seurat_obj$scdrs_zscore <- scdrs_df[ix,]$zscore
+seurat_obj$scdrs_pval <- scdrs_df[ix,]$pval
+
+seurat_obj$has_scdrs <- !is.na(seurat_obj$scdrs_score)
+
+
+traits <- c('scdrs_score', 'scdrs_zscore')
+datasets <- unique(seurat_obj$Study)
+
+plot_df <- data.frame()
+for(dataset in datasets){
+    conditions <- subset(seurat_obj@meta.data, Study == dataset) %>% .$Diagnosis %>% as.character %>% unique
+   # conditions <- unique(seurat_obj$Diagnosis)
+    for(condition in conditions){
+
+        print(dataset)
+        print(condition)
+
+        seurat_obj$selected <- ifelse(
+            seurat_obj$Study == dataset & seurat_obj$Diagnosis == condition & seurat_obj$has_scdrs,
+            'yes', 'no'
+        )
+
+        cur_meta <- subset(seurat_obj@meta.data, selected == 'yes')
+        exclude_clusters <- names(which(table(cur_meta$cell_identity) < 50))
+
+        seurat_obj$selected <- ifelse(
+            seurat_obj$cell_identity %in% exclude_clusters, 'no',
+            seurat_obj$selected
+        )
+
+        seurat_obj <- ModuleTraitCorrelation(
+            seurat_obj,
+            traits = traits,
+            group.by = 'cell_identity',
+            subset_by = 'selected',
+            subset_groups = 'yes',
+            wgcna_name = 'consensus'
+        )
+
+        mt_cor <- GetModuleTraitCorrelation(seurat_obj)
+
+        cor_df <- do.call(rbind, lapply(names(mt_cor$cor), function(x){
+            cur_cor <- mt_cor$cor[[x]]
+            cur_fdr <- mt_cor$fdr[[x]]
+            cur_cor_df <- reshape2::melt(cur_cor)
+            cur_fdr_df <- reshape2::melt(cur_fdr)
+            cur_cor_df$fdr <- cur_fdr_df$value
+            cur_cor_df$group <- x
+            cur_cor_df
+        }))
+        cor_df %<>% dplyr::rename(c(trait = Var1, module = Var2, cor=value))
+
+        cor_df$Diagnosis <- condition 
+        cor_df$Study <- dataset
+
+        plot_df <- rbind(plot_df, cor_df)
+
+    }
+}
+write.csv(plot_df, file=paste0(data_dir, 'scDRS_module_correlation_snRNA.csv'), quote=FALSE)
+
+
+plot_df <- read.csv(file=paste0(data_dir, 'scDRS_module_correlation_snRNA.csv'))
+
+
+plot_df$group <- factor(
+    as.character(plot_df$group),
+    levels = c(names(human_cp), 'all_cells')
+)
+plot_df$group <- fct_rev(plot_df$group)
+
+plot_df$Diagnosis <- factor(
+    as.character(plot_df$Diagnosis), 
+    levels = c('Control', 'Early-AD', 'AD', 'DSAD')
+)
+
+modules <- GetModules(seurat_obj)
+mod_levels <- levels(modules$module)
+
+plot_df$module <- factor(as.character(plot_df$module), levels=mod_levels)
+
+
+#-----------------------------------------------#
+# consensus modules
+#-----------------------------------------------#
+
+label_df <- plot_df %>% 
+    subset(trait == 'scdrs_score') %>% 
+    group_by(Diagnosis, Study) %>% 
+    slice_max(order_by=cor, n=10)
+
+plot_range <- plot_df %>% subset(trait == 'scdrs_score') %>% .$cor %>% abs %>% max
+plot_range <- c(-plot_range + 0.01, plot_range + 0.01)
+
+p1 <- plot_df %>% subset(trait == 'scdrs_score') %>%
+    ggplot(aes(x = module, y = group, fill=cor)) + 
+    geom_tile() + 
+    geom_text(
+        data = label_df,
+        aes(x = module, y = group, label=round(cor, 2)), size=1.5
+    ) +
+    scale_fill_gradient2(high='red', mid='white', low='blue', limits=plot_range) + 
+    #coord_equal() +
+    RotatedAxis() +
+    theme(
+        axis.line.x = element_blank(),
+        axis.line.y = element_blank(),
+        panel.border = element_rect(linewidth=1, color='black', fill=NA),
+        axis.title.x = element_blank(),
+        axis.title.y = element_blank(),
+        plot.title = element_text(hjust=0.5),
+        #panel.grid = element_line(size=0.25, color='lightgrey'),
+    ) 
+
+
+# need to finish making this plot with adding labels
+
+
+pdf(paste0(fig_dir, 'MT_cor_heatmap_consensus_snRNA.pdf'), width=12, height=14)
+p1 + facet_grid(Study~Diagnosis, scales='free')
+dev.off()
+
+```
+
+Make a DotPlot where the dot color is scDRS correlation 
+and the size is the average ME 
+
+```{r eval=FALSE}
+
+
+plot_df <- read.csv(file=paste0(data_dir, 'scDRS_module_correlation_snRNA.csv'))
+
+plot_df %>% subset(group %in% c('MG1') & module == 'M11' & trait == 'scdrs_score') %>%
+     arrange(-cor ) %>% .$cor %>% mean
+
+plot_df$group <- factor(
+    as.character(plot_df$group),
+    levels = c(names(human_cp), 'all_cells')
+)
+plot_df$group <- fct_rev(plot_df$group)
+
+plot_df$Diagnosis <- factor(
+    as.character(plot_df$Diagnosis), 
+    levels = c('Control', 'Early-AD', 'AD', 'DSAD')
+)
+
+modules <- GetModules(seurat_obj)
+mod_levels <- levels(modules$module)
+
+plot_df$module <- factor(as.character(plot_df$module), levels=mod_levels)
+
+
+#plot_df <- subset(plot_df, trait == 'scdrs_score' & Study == 'ADDS' & group != 'all_cells' & Diagnosis == 'Control')
+plot_df <- subset(plot_df, trait == 'scdrs_score' &  group != 'all_cells' )
+
+table(plot_df$module)
+
+
+plot_df$id <- paste(plot_df$group, plot_df$Diagnosis, plot_df$Study, sep='_')
+
+
+data.features <- GetMEs(seurat_obj, wgcna_name='consensus') %>% as.data.frame()
+data.features$id <- seurat_obj$cell_identity
+
+#---------------------------------------------------------------------
+# code from Seurat DotPlot
+#---------------------------------------------------------------------
+
+split.by <- 'Diagnosis'
+scale <- TRUE
+col.min <- -2.5
+col.max <- 2.5
+dot.min <- 0
+
+data.features$id <- paste(seurat_obj$cell_identity, seurat_obj$Diagnosis, seurat_obj$Study, sep='_')
+
+data.plot <- lapply(
+    X = unique(x = data.features$id),
+    FUN = function(ident) {
+      data.use <- data.features[data.features$id == ident, 1:(ncol(x = data.features) - 1), drop = FALSE]
+      avg.exp <- apply(
+        X = data.use,
+        MARGIN = 2,
+        FUN = function(x) {
+          return(mean(x = expm1(x = x)))
+        }
+      )
+      pct.exp <- apply(X = data.use, MARGIN = 2, FUN = PercentAbove, threshold = 0)
+      return(list(avg.exp = avg.exp, pct.exp = pct.exp))
+    }
+  )
+names(x = data.plot) <- unique(x = data.features$id)
+id.levels <- levels(seurat_obj$cell_type)
+data.plot <- lapply(
+    X = names(x = data.plot),
+    FUN = function(x) {
+      data.use <- as.data.frame(x = data.plot[[x]])
+      data.use$features.plot <- rownames(x = data.use)
+      data.use$id <- x
+      return(data.use)
+    }
+  )
+  data.plot <- do.call(what = 'rbind', args = data.plot)
+  if (!is.null(x = id.levels)) {
+    data.plot$id <- factor(x = data.plot$id, levels = id.levels)
+  }
+  ngroup <- length(x = levels(x = data.plot$id))
+
+  avg.exp.scaled <- sapply(
+    X = unique(x = data.plot$features.plot),
+    FUN = function(x) {
+      data.use <- data.plot[data.plot$features.plot == x, 'avg.exp']
+      if (scale) {
+        data.use <- scale(x = log1p(data.use))
+        data.use <- MinMax(data = data.use, min = col.min, max = col.max)
+      } else {
+        data.use <- log1p(x = data.use)
+      }
+      return(data.use)
+    }
+  )
+  avg.exp.scaled <- as.vector(x = t(x = avg.exp.scaled))
+  data.plot$avg.exp.scaled <- avg.exp.scaled
+  
+  data.plot$pct.exp[data.plot$pct.exp < dot.min] <- NA
+  data.plot$pct.exp <- data.plot$pct.exp * 100
+
+# match with the other table
+data.plot <- subset(data.plot, id %in% plot_df$id)
+
+# merge the DFs
+data.plot$ix <- paste0(data.plot$features.plot, '_', data.plot$id)
+plot_df$ix <- paste0(plot_df$module, '_', plot_df$id)
+
+ix <- match(plot_df$ix, data.plot$ix, )
+all.equal(plot_df$ix, data.plot$ix[ix])
+
+plot_df$avg.exp <- data.plot$avg.exp[ix]
+plot_df$avg.exp.scaled <- data.plot$avg.exp.scaled[ix]
+plot_df$pct.exp <- data.plot$pct.exp[ix]
+
+
+# what group shad a significant scDRS?
+signif_groups <- c('MG1', 'MG2')
+
+plot_range <- plot_df %>% subset(group %in% signif_groups) %>% .$cor %>% range
+size_range <- plot_df %>% subset(group %in% signif_groups) %>% .$pct.exp %>% range
+
+# loop through Studies & diagnosis
+combos <- expand.grid(unique(as.character(seurat_obj$Diagnosis)), unique(as.character(seurat_obj$Study)))
+plot_list <- list()
+for(i in 1:nrow(combos)){
+    cur_study <- as.character(combos[i,2])
+    cur_diag <- as.character(combos[i,1])
+    cur_name <- paste0(cur_study, '_', cur_diag)
+
+    cur_df <- plot_df %>% subset(group %in% signif_groups & Study == cur_study & Diagnosis == cur_diag)
+
+    if(nrow(cur_df) == 0){next}
+    print(cur_name)
+
+    p <-cur_df %>%
+        ggplot(aes(x = module, y = group, color=cor, size=pct.exp)) + 
+        geom_point() + 
+        scale_color_gradient2(high='red', mid='white', low='blue', limits=plot_range) + 
+        scale_size_continuous(limits=size_range) +
+        coord_equal() +
+        RotatedAxis() +
+        ylab(paste0(cur_diag, ', ', cur_study)) + 
+        theme(
+            axis.line.x = element_blank(),
+            axis.line.y = element_blank(),
+            panel.border = element_rect(linewidth=1, color='black', fill=NA),
+            axis.title.x = element_blank(),
+            axis.title.y = element_text(angle=0, vjust=0.5),
+            plot.title = element_text(hjust=0.5),
+            panel.grid = element_line(size=0.25, color='lightgrey'),
+            plot.margin = margin(c(0,0,0,0)),
+            
+        ) 
+
+    if(length(plot_list) > 0){
+        p <- p + theme(
+            axis.text.x = element_blank(),
+            axis.ticks.x = element_blank(),
+        )
+    }
+
+    plot_list[[cur_name]] <- p
+
+}
+
+
+pdf(paste0(fig_dir, 'MT_cor_heatmap_consensus_dotplot.pdf'), width=8, height=5)
+wrap_plots(rev(plot_list), ncol=1) + plot_layout(guides='collect')
+dev.off()
+
+
+
+
+# p1 <- plot_df %>% subset(group %in% signif_groups) %>%
+#     ggplot(aes(x = module, y = group, color=cor, size=pct.exp)) + 
+#     geom_point() + 
+#     scale_color_gradient2(high='red', mid='white', low='blue') + 
+#    # coord_equal() +
+#     RotatedAxis() +
+#     theme(
+#         axis.line.x = element_blank(),
+#         axis.line.y = element_blank(),
+#         panel.border = element_rect(linewidth=1, color='black', fill=NA),
+#         axis.title.x = element_blank(),
+#         axis.title.y = element_blank(),
+#         plot.title = element_text(hjust=0.5),
+#         panel.grid = element_line(size=0.25, color='lightgrey'),
+#     ) 
+
+
+# pdf(paste0(fig_dir, 'MT_cor_heatmap_consensus_dotplot.pdf'), width=6, height=6)
+# p1 + facet_grid(Study~Diagnosis, scales='free')
+# dev.off()
+
+
+
+
+
+
+
+p <- VlnPlot(seurat_obj, group.by='cell_identity', features='scdrs_score', pt.size=0)
+pdf(paste0(fig_dir, 'test_scdrs_vln.pdf'), width=12, height=4)
+p
+dev.off()
+
+
+# how many signif 
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+Abandoning below
+
+Try to get the Moran's I or the Geary's C to work from the Voyager package
+
+Following this tutorial from Voyager:
+https://pachterlab.github.io/voyager/articles/nonspatial.html
+
+```{r eval=FALSE}
+
+
+library(Voyager)
+library(SpatialFeatureExperiment)
+library(SpatialExperiment)
+library(DropletUtils)
+library(BiocNeighbors)
+library(scater)
+library(scran)
+library(bluster)
+library(BiocParallel)
+library(scuttle)
+library(stringr)
+library(BiocSingular)
+library(spdep)
+library(patchwork)
+library(dplyr)
+library(reticulate)
+
+# seurat_morabito <- readRDS("/dfs7/swaruplab/smorabit/analysis/scWGCNA/data/Swarup_2021.rds")
+
+# just get the Morabito / Miyoshi 2021 dataset 
+cur_seurat <- subset(seurat_obj, Study == 'ADDS')
+
+# load the scDRS results
+scdrs_df <- read.csv(file=paste0(data_dir,'ADDS_scDRS_results.csv'))
+
+# subset for one trait
+cur_df <- subset(scdrs_df, trait == 'Alzheimers_Jansen2019')
+
+# make sure to only use barcodes that match between the Seurat obj and the scDRS 
+cur_seurat <- subset(seurat_obj, bc %in% cur_df$barcode)
+
+ix <- match(cur_seurat$bc, cur_df$barcode)
+all.equal(as.character(cur_df$barcode)[ix], as.character(cur_seurat$bc))
+
+cur_seurat$scdrs_score <- cur_df[ix,]$norm_score
+cur_seurat$scdrs_zscore <- cur_df[ix,]$zscore
+cur_seurat$scdrs_pval <- cur_df[ix,]$pval
+
+
+# harmony <- seurat_morabito@reductions$harmony@cell.embeddings
+# harmony <- harmony[cur_seurat$bc,]
+# rownames(harmony) <- colnames(cur_seurat)
+
+# cur_seurat@reductions$harmony <- Seurat::CreateDimReducObject(
+#   embeddings = harmony,
+#   key="harmony",
+#   assay="RNA"
+# )
+
+
+
+
+p1 <- VlnPlot(
+    cur_seurat, 
+    features = 'scdrs_score',
+    group.by = 'cell_identity', 
+    pt.size=0) + NoLegend()
+
+p2 <- VlnPlot(
+    cur_seurat, 
+    features = 'scdrs_zscore',
+    group.by = 'cell_identity', 
+    pt.size=0) + NoLegend()
+
+
+pdf(paste0(fig_dir, 'test_scdrs_vln_ADDS_AD.pdf'), width=10, height=6)
+p1 / p2
+dev.off()
+
+
+#cur_seurat <- subset(seurat_obj, Study == 'Morabito_Miyoshi')
+
+# convert it to SingleCellExperiment
+sce <- as.SingleCellExperiment(cur_seurat)
+
+#-------------------------------------------------------------#
+# Data processing
+#-------------------------------------------------------------#
+
+sce <- logNormCounts(sce)
+
+#-------------------------------------------------------------#
+# Run KNN on the SCVANI representation
+#-------------------------------------------------------------#
+
+# run KNN
+foo <- findKNN(reducedDim(sce, "SCANVI")[,1:30], k=10, BNPARAM=AnnoyParam())
+#foo <- findKNN(reducedDim(sce, "HARMONY")[,1:30], k=10, BNPARAM=AnnoyParam())
+
+# Split by row
+foo_nb <- asplit(foo$index, 1)
+dmat <- 1/foo$distance
+
+# Row normalize the weights
+dmat <- sweep(dmat, 1, rowSums(dmat), FUN = "/")
+glist <- asplit(dmat, 1)
+
+# Sort based on index
+ord <- lapply(foo_nb, order)
+foo_nb <- lapply(seq_along(foo_nb), function(i) foo_nb[[i]][ord[[i]]])
+class(foo_nb) <- "nb"
+glist <- lapply(seq_along(glist), function(i) glist[[i]][ord[[i]]])
+
+listw <- list(style = "W",
+              neighbours = foo_nb,
+              weights = glist)
+class(listw) <- "listw"
+attr(listw, "region.id") <- colnames(sce)
+
+#-------------------------------------------------------------#
+# Convert formats from SCE to SFE
+#-------------------------------------------------------------#
+
+# convert to SFE format
+(sfe <- toSpatialFeatureExperiment(sce, spatialCoords = reducedDim(sce, "UMAP")[,1:2],
+                                  spatialCoordsNames = NULL))
+
+# add the knn to the SFE
+colGraph(sfe, "knn") <- listw
+
+#-------------------------------------------------------------#
+# Test running moran's I
+#-------------------------------------------------------------#
+
+# why nans?
+sfe <- runMoransI(sfe,  
+    features = c('CSF1R', 'SLC17A7', 'MOBP'))
+rowData(sfe)[c('CSF1R', 'SLC17A7', 'MOBP'),]
+
+
+# gloabl Moran's I
+sfe <- colDataMoransI(sfe, c("nCount_RNA", "doublet_scores", 'scdrs_score'))
+colFeatureData(sfe)[ c("nCount_RNA", "doublet_scores", 'scdrs_score'),]
+
+sfe <- colDataUnivariate(sfe, "moran.plot",  c("nCount_RNA", "doublet_scores", 'scdrs_score'))
+
+p <- moranPlot(sfe, "scdrs_score", color_by = "cell_identity")
+
+pdf(paste0(fig_dir, 'test_voyager_moranI_scdrs_score.pdf'), width=10, height=6)
+p
+dev.off()
+
+# Local Moran's I
+sfe <- colDataUnivariate(sfe, "localmoran",  c("nCount_RNA", "doublet_scores"))
+
+pdf(paste0(fig_dir, 'test_voyager_local_moranI.pdf'), width=10, height=6)
+plotSpatialFeature(sfe,c("nCount_RNA", "doublet_scores"))
+dev.off()
+
+pdf(paste0(fig_dir, 'test_voyager_local_moranI.pdf'), width=10, height=6)
+plotLocalResult(sfe, "localmoran",  c("nCount_RNA", "doublet_scores"), 
+                colGeometryName = "centroids",
+                divergent = TRUE, diverge_center = 0, ncol = 2)
+dev.off()
+
+#-------------------------------------------------------------#
+# Try it with Geary's C (not in the tutorial)
+#-------------------------------------------------------------#
+
+# Geary's C
+sfe <- colDataUnivariate(sfe, type="geary",  c("nCount_RNA", "doublet_scores"))
+
+# LOSH
+sfe <- colDataUnivariate(sfe, type="LOSH",  c("nCount_RNA", "doublet_scores"))
+
+
+colFeatureData(sfe)[c("nCount_RNA", "doublet_scores"),]
+
+
+#-------------------------------------------------------------#
+# Can I run Moran's I on just one cell cluster?
+# 
+# Yes you can. But you first have to make a new KNN graph after 
+# subsetting.
+#-------------------------------------------------------------#
+
+# sfe <- colDataUnivariate(sfe, "moran",  c("nCount_RNA", "doublet_scores"), sample_id = 'cell_type')
+# colFeatureData(sfe)[ c("nCount_RNA", "doublet_scores"),]
+
+test <- sfe[,sfe$cell_type == 'MG']
+
+# run KNN
+foo <- findKNN(reducedDim(test, "SCANVI")[,1:30], k=25, BNPARAM=AnnoyParam())
+
+# Split by row
+foo_nb <- asplit(foo$index, 1)
+dmat <- 1/foo$distance
+
+# Row normalize the weights
+dmat <- sweep(dmat, 1, rowSums(dmat), FUN = "/")
+glist <- asplit(dmat, 1)
+
+# Sort based on index
+ord <- lapply(foo_nb, order)
+foo_nb <- lapply(seq_along(foo_nb), function(i) foo_nb[[i]][ord[[i]]])
+class(foo_nb) <- "nb"
+glist <- lapply(seq_along(glist), function(i) glist[[i]][ord[[i]]])
+
+listw <- list(style = "W",
+              neighbours = foo_nb,
+              weights = glist)
+class(listw) <- "listw"
+attr(listw, "region.id") <- colnames(test)
+
+colGraph(test, "knn") <- listw
+
+
+test <- colDataUnivariate(test, "moran",  c("nCount_RNA", "doublet_scores", 'scdrs_score'))
+colFeatureData(test)[ c("nCount_RNA", "doublet_scores", 'scdrs_score'),]
+
+test <- colDataUnivariate(test, "geary",  c("nCount_RNA", "doublet_scores", 'scdrs_score'))
+colFeatureData(test)[ c("nCount_RNA", "doublet_scores", 'scdrs_score'),]
+
+test <- runMoransI(test,  
+    features = c('CSF1R', 'SLC17A7', 'MOBP'))
+rowData(test)[c('CSF1R', 'SLC17A7', 'MOBP'),]
+
+# run this for all genes:
+test <- runMoransI(test, features = rownames(test), BPPARAM = MulticoreParam(2))
+
+p <- plotRowDataHistogram(test, "moran_sample01", bins = 50) +
+    scale_color_continuous(breaks = scales::breaks_width(2))
+
+
+pdf(paste0(fig_dir, 'test_voyager_moranI_hist.pdf'), width=10, height=6)
+p
+dev.off()
+
+```

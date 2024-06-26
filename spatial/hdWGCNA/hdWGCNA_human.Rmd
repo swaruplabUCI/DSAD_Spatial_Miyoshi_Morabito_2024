@@ -1,0 +1,5094 @@
+```{r eval=FALSE}
+
+# conda activate voyager
+library(Seurat)
+library(tidyverse)
+library(cowplot)
+library(patchwork)
+library(RColorBrewer)
+library(EnsDb.Hsapiens.v86)
+library(GenomicRanges)
+library(ensembldb)
+library(viridis)
+library(ggpubr)
+library(igraph)
+library(harmony)
+library(WGCNA)
+library(dendextend)
+library(circlize)
+library(RColorBrewer)
+library(magrittr)
+
+
+#devtools::install_github('smorabit/hdWGCNA', ref='dev')
+library(hdWGCNA)
+
+colfunc <- colorRampPalette(rev(brewer.pal(11, 'Spectral' )))
+theme_set(theme_cowplot())
+
+setwd("/dfs7/swaruplab/smorabit/analysis/ADDS_2021/visium/human/hdWGCNA")
+
+fig_dir <- "figures/"
+data_dir <- "data/"
+
+source('/dfs7/swaruplab/smorabit/analysis/scWGCNA/bin/spatial_functions.R')
+
+# re-load hdWGCNA seurat object
+seurat_human <- readRDS(file=paste0(data_dir, "ADDS_seurat_processed_annotated_hdWGCNA_all.rds"))
+groups <- c('L1', 'L2-3', 'L3-4', 'L3-4-5', 'L5-6', 'L6b', 'WM')
+
+# re-load seurat obj & BayesSpace object:
+# seurat_human <- readRDS(paste0(data_dir,'ADDS_seurat_processed.rds'))
+
+# seurat_human <- readRDS("/dfs7/swaruplab/emiyoshi/Visium_ADDS/ADDS_seurat_processed_annotated.rds")
+
+# seurat_human$Diagnosis <- factor(
+#   as.character(seurat_human$Diagnosis),
+#   levels = c("Control", "earlyAD", "AD", "AD_DS")
+# )
+
+# # 5x data:
+# seurat_human <- readRDS('/dfs7/swaruplab/emiyoshi/Visium_5X/5XFAD_seurat_processed_annotated.rds')
+
+# seurat_human$Age <- factor(
+#   as.character(seurat_human$Age),
+#   levels = c("4mo", "6mo", "8mo", "12mo")
+# )
+œ
+human_cp <- c(
+      "L1" = "#8B3D5A", "L2-3" = "#E7BDE1", "L3-4" = "#E6A4CD",
+      "L3-4-5" = "#CF8BA3", "L5-6" = "#9E6D7F", "L6b" = "#CDAEB9", "WM1" = "#64BCDB", "WM2" = "#62A7D7", "WM3" = "#99C8D7")
+
+mouse_cp <- c(
+      "ctx-deep-layers" = "#5b4468", "ctx-upper-layers" = "#9581a4", "ctx-olfactory" = "#8073ab",
+      "hippocampus" = "#d6a5b2", "hippocampus-pyramidal" = "#e193aa",
+      "lateral-ventricle" = "#d2c3b2",
+      "striatum" = "#F0DE8C",
+      "thalamus1" = "#00CBA7", "thalamus2" = "#abcc94",
+      "hypothalamus-amygdala" = "#72c9b1",
+      "WM1" = "#325ea8", "WM2" = "#64bcdb", "WM-cerebral-peduncle" = "#62a7d7",
+      "erythrocytes-neurons" = "#d07fc4", "unknown" = "#c47c4d"
+    )
+
+
+# set factor levels for human clusters:
+seurat_human$annotation <- factor(
+  as.character(seurat_human$annotation),
+  levels = names(human_cp)
+)
+
+# human ADDS + AD integrated and processed with hdWGCNA
+seurat_obj <- readRDS(file=paste0(data_dir, 'ADDS_AD_integrated_hdWGCNA.rds'))
+
+
+# human ADDS + AD snRNA-seq
+# seurat_obj <- readRDS(file="/dfs7/swaruplab/smorabit/analysis/ADDS_2021/splitseq/integration/data/ADDS_AD_integrated.rds" )
+
+group_levels <- c(
+  'EX L2', 'EX L2-3', 'EX L3-5', 'EX L5', 'EX L5-6', 'EX L6',
+  'INH VIP+', 'INH', 'INH LAMP5+', 'INH PVALB+', 'INH SST+',
+  'ODC1', 'ODC2', 'ODC3',
+  'OPC1', 'OPC2', 'OPC3',
+  'MG1', 'MG2',
+  'ASC1', 'ASC2', 'ASC3', 'ASC4',
+  'END Arterial', 'END Capillary',
+  'T-Pericyte', 'M-Pericyte', 'SMC',
+  'Perivascular Fibroblast', 'Meningeal Fibroblast'
+)
+color_df$group <- factor(as.character(color_df$group), levels=group_levels)
+color_df <- arrange(color_df, group)
+
+seurat_obj$cell_identity <- factor(
+  as.character(seurat_obj$cell_identity),
+  levels = group_levels
+)
+
+
+# re-load dendrogram from module clustering:
+load(paste0(data_dir, 'dendro.rda'))
+
+
+modules <- GetModules(seurat_human)
+#write.csv(modules, file=paste0(data_dir, 'metamodules.csv'), row.names=FALSE)
+
+```
+
+Run hdWGCNA on each cortical layer using pseudo-bulk replicated
+
+```{r eval=FALSE}
+
+
+# list of groups to run hdWGCNA
+groups <- c('L1', 'L2-3', 'L3-4', 'L3-4-5', 'L5-6', 'L6b', 'WM')
+
+# get list of genes to use 
+seurat_human <- SetupForWGCNA(
+  seurat_human,
+  gene_select = "fraction",
+  fraction = 0.05,
+  group.by = 'annotation',
+  wgcna_name = groups[1]
+)
+length(GetWGCNAGenes(seurat_human))
+genes_use <- GetWGCNAGenes(seurat_human)
+
+# compute pseudo-bulk replicates 
+datExpr <- to_pseudobulk(
+    seurat_human,
+    replicate_col = 'Sample',
+    cell_type_col = 'annotation',
+    label_col = 'Diagnosis'
+)
+datExpr <- Reduce(cbind, lapply(names(datExpr), function(x){
+    cur <- datExpr[[x]]
+    colnames(cur) <- paste0(x, '_', colnames(cur))
+    cur
+}))
+datExpr <- t(datExpr[GetWGCNAGenes(seurat_human),])
+
+# compute CPM:
+cpm <- t(apply(datExpr, 1, function(x){
+    y <- (x) / sum(x) * 1000000
+    log2(y + 1)
+}))
+
+# run WGCNA separately for each group
+for(cur_group in groups){
+    print(cur_group)
+
+    # setup WGCNA in seurat object
+    wgcna_name <- cur_group
+    seurat_human <- SetupForWGCNA(
+        seurat_human,
+        features = genes_use,
+        wgcna_name = cur_group
+    )
+
+    # take thee pseudobulk expression for this group 
+    cur_cpm <- cpm[grepl(cur_group, rownames(cpm)),]
+    seurat_human@misc[[wgcna_name]]$datExpr <- cur_cpm
+
+    seurat_human <- TestSoftPowers(seurat_human)
+    plot_list <- PlotSoftPowers(seurat_human)
+
+    # assemble with patchwork
+    pdf(paste0(fig_dir, cur_group, '_softpower.pdf'), width=12, height=8)
+    print(wrap_plots(plot_list, ncol=2))
+    dev.off()
+
+    # construct wgcna network:
+    seurat_human <- ConstructNetwork(
+        seurat_human,
+        #PamStage = T,
+            minModuleSize=50,
+            #detectCutHeight=0.995,
+            mergeCutHeight=0.1,
+        tom_name=cur_group,
+        overwrite_tom=TRUE
+    )
+
+    # plot the dendrogram
+    pdf(paste0(fig_dir, cur_group, "_pb_dendro.pdf"),height=3, width=6)
+    print(PlotDendrogram(seurat_human, main='hdWGCNA Dendrogram'))
+    dev.off()
+
+    seurat_human <- ModuleEigengenes(
+        seurat_human,
+        group.by.vars="Sample",
+    )
+
+    seurat_human <- ModuleConnectivity(
+        seurat_human,
+        reassign_modules=FALSE
+    )
+
+}
+
+saveRDS(seurat_human, file=paste0(data_dir, "ADDS_seurat_processed_annotated_hdWGCNA_all.rds"))
+
+
+# plot the hub genes 
+
+# individual module networks
+# run WGCNA separately for each group
+groups <- c('L1', 'L2-3', 'L3-4', 'L3-4-5', 'L5-6', 'L6b', 'WM')
+for(cur_group in groups){
+    print(cur_group)
+
+    seurat_human <- SetActiveWGCNA(seurat_human, cur_group)
+
+  ModuleNetworkPlot(
+    seurat_human,
+    outdir = paste0(fig_dir, 'module_hubs/')
+  )
+}
+
+
+
+# seurat_human <- SetupForWGCNA(
+#   seurat_human,
+#   gene_select = "fraction",
+#   fraction = 0.05,
+#   group.by = 'annotation',
+#   wgcna_name = cur_group
+# )
+# length(GetWGCNAGenes(seurat_human))
+
+
+
+
+
+
+
+
+
+# net <- GetNetworkData(seurat_human)
+
+# MEs <- net$multiMEs[[cur_group]]$data
+
+# # Calculate consensus dissimilarity of consensus module eigengenes
+# consMEDiss = consensusMEDissimilarity(net$multiMEs);
+# # Cluster consensus modules
+# consMETree = hclust(as.dist(consMEDiss), method = "average");
+
+# # Plot the result
+# pdf(paste0(fig_dir, cur_group, "_pb_ME_dendro.pdf"),height=6, width=6)
+# plot(consMETree, main = "Consensus clustering of consensus module eigengenes",
+# xlab = "", sub = "")
+# abline(h=0.25, col = "red")
+# dev.off()
+
+
+
+
+
+
+
+
+
+
+```
+
+
+Overlap the L3-4-5 and the L5-6 modules
+
+```{r eval=FALSE}
+
+
+# comparison 3:
+group1 <- 'L3-4-5'
+group2 <- 'L5-6'
+plotname <- paste0(group1, '_vs_', group2)
+high_color = 'navy'
+w=6
+
+
+m1 <- GetModules(seurat_human, wgcna_name=group1)
+m2 <- GetModules(seurat_human, wgcna_name=group2)
+
+mods1 <- levels(m1$module); mods1 <- mods1[mods1 != 'grey']
+mods2 <- levels(m2$module); mods2 <- mods2[mods2 != 'grey']
+
+genome.size <- nrow(seurat_human)
+
+
+# run overlaps between module gene lists and DEG lists:
+overlap_df <- do.call(rbind, lapply(mods1, function(cur_mod1){
+  cur_m1_genes <- m1 %>% subset(module == cur_mod1) %>% .$gene_name
+  cur_overlap_df <- do.call(rbind, lapply(mods2, function(cur_mod2){
+    print(paste0(cur_mod1, ' ', cur_mod2))
+    cur_m2_genes <- m2 %>% subset(module == cur_mod2) %>% .$gene_name
+    cur_overlap <- testGeneOverlap(newGeneOverlap(
+        cur_m1_genes,
+        cur_m2_genes,
+        genome.size=genome.size
+    ))
+    c(cur_overlap@odds.ratio, cur_overlap@pval, cur_overlap@Jaccard, length(cur_overlap@intersection))
+  })) %>% as.data.frame
+  colnames(cur_overlap_df) <- c('odds_ratio', 'pval', 'Jaccard', 'size_intersection')
+  cur_overlap_df$m1 <- cur_mod1
+  cur_overlap_df$m2 <- mods2
+
+  # module color:
+  #cur_overlap_df$color <- modules %>% subset(module == cur_mod) %>% .$color %>% unique
+  cur_overlap_df
+}))
+
+overlap_df$m1 <- factor(as.character(overlap_df$m1), levels=mods1)
+overlap_df$m2 <- factor(as.character(overlap_df$m2), levels=mods2)
+
+# re-order
+tmp <- unlist(lapply(mods2, function(cur_mod2){
+  cur <- subset(overlap_df, m2==cur_mod2)
+  which(cur$odds_ratio == max(cur$odds_ratio))
+}))
+
+overlap_df$m2 <- factor(as.character(overlap_df$m2), levels=rev(mods2[order(tmp)]))
+
+# adjust for multiple comparisons:
+overlap_df$fdr <- p.adjust(overlap_df$pval, method='fdr')
+
+# significance level:
+overlap_df$Significance <- gtools::stars.pval(overlap_df$fdr)
+overlap_df$Significance <- ifelse(
+  overlap_df$Significance == '.', '',
+  overlap_df$Significance
+)
+
+# plot the results as a heatmap:
+maxval <- 50
+plot_df <- overlap_df
+plot_df$odds_ratio <- ifelse(plot_df$odds_ratio > maxval, maxval, plot_df$odds_ratio)
+plot_df$textcolor <- ifelse(plot_df$odds_ratio > 0.7*maxval, 'white', 'black')
+
+
+p <- plot_df %>%
+  ggplot(aes(x=m1, y=m2, fill=odds_ratio)) +
+  geom_tile() +
+  geom_text(label=plot_df$Significance, vjust = 0.72, color=plot_df$textcolor) +
+  scale_fill_gradient(low='white', high=high_color) +
+  RotatedAxis() +
+  labs(fill = 'Odds ratio') +
+  theme(
+    panel.border = element_rect(fill=NA, color='black', size=1),
+    axis.line.x = element_blank(),
+    axis.line.y = element_blank(),
+    #axis.title.x = element_blank(),
+    #axis.title.y = element_blank(),
+    #axis.text.x = element_blank(),
+   # axis.ticks.x = element_blank(),
+   # axis.text.y = element_blank(),
+    #axis.ticks.y = element_blank(),
+    plot.margin=margin(0,0,0,0)
+  ) +
+  coord_equal() + xlab(group1) + ylab(group2)
+
+
+# Plot the result
+pdf(paste0(fig_dir, plotname, "_overlap.pdf"),height=10, width=10)
+p
+dev.off()
+
+```
+
+Make a sankey plot to show the co-expression remodeling across cortical layers 
+
+
+```{r eval=FALSE}
+
+
+test <- lapply(groups, function(x){
+
+    cur_mods <- GetModules(seurat_human, wgcna_name = x)[,1:3]
+    cur_mods <- cur_mods[genes_use,]
+    cur_mods$gene_name <- genes_use
+    cur_mods$module <- ifelse(is.na(cur_mods$module), 'grey' , as.character(cur_mods$module))
+    cur_mods$color <- ifelse(is.na(cur_mods$color), 'grey' , as.character(cur_mods$color))
+    cur_mods 
+
+})
+
+
+all_mods <- Reduce(rbind, lapply(groups, function(x){
+
+    cur_mods <- GetModules(seurat_human, wgcna_name = x)[,1:3]
+    cur_mods <- cur_mods[genes_use,]
+    cur_mods$gene_name <- genes_use
+    cur_mods$module <- ifelse(is.na(cur_mods$module), 'grey' , as.character(cur_mods$module))
+    cur_mods$color <- ifelse(is.na(cur_mods$color), 'grey' , as.character(cur_mods$color))
+    
+    cur_mods <- cur_mods %>% 
+    dplyr::select(c(module, color)) %>% 
+    distinct()
+
+    
+    cur_mods 
+
+}))
+all_mods <- all_mods %>% subset(module != 'grey') %>% distinct
+mod_colors <- all_mods$color; names(mod_colors) <- all_mods$module
+
+
+names(test) <- groups
+
+df <- test[[1]]
+df <- dplyr::rename(df, module1=module, color1=color)
+df$module1 <- df$module
+df$color1 <- df$color
+for(i in 2:length(groups)){
+    df[,paste0('module', i)] <- test[[i]]$module
+    df[,paste0('color', i)] <- test[[i]]$color
+}
+
+
+
+
+library(ggsankey)
+
+df <- df%>% 
+  ggsankey::make_long(module1, module2, module3, module4, module5, module6, module7)
+
+
+
+p <- ggplot(df, aes(x = x, 
+               next_x = next_x, 
+               node = node, 
+               next_node = next_node,
+               fill = factor(node),
+               label = node)) +
+  geom_sankey() +
+  geom_sankey_label(size=2) +
+  theme_sankey(base_size = 16) + NoLegend() +
+  scale_fill_manual(values=mod_colors) + 
+  scale_x_discrete(labels=groups) 
+
+pdf(paste0(fig_dir, 'module_sankey.pdf'), width=12, height=6)
+p
+dev.off()
+
+
+```
+
+Compute module eigengenes for all 166 of the modules from the 7 co-ex nets
+
+```{r eval=FALSE}
+
+groups <- c('L1', 'L2-3', 'L3-4', 'L3-4-5', 'L5-6', 'L6b', 'WM')
+genes_use <- GetWGCNAGenes(seurat_human)
+
+# run RenameModules
+for(group in groups){
+    print(group)
+    seurat_human <- ResetModuleNames(
+        seurat_human,
+        new_name = paste0(gsub('-', '', group), '-M'),
+        wgcna_name = group
+    )
+}
+
+# make a table containing the modules for all of the nets
+all_mods <- Reduce(rbind, lapply(groups, function(x){
+
+    cur_mods <- GetModules(seurat_human, wgcna_name = x)[,1:3]
+    cur_mods <- cur_mods[genes_use,]
+    cur_mods$gene_name <- genes_use
+    cur_mods$module <- ifelse(is.na(cur_mods$module), 'grey' , as.character(cur_mods$module))
+    cur_mods$color <- ifelse(is.na(cur_mods$color), 'grey' , as.character(cur_mods$color))
+    
+    cur_mods <- cur_mods %>% 
+    dplyr::select(c(gene_name, module, color)) 
+    cur_mods 
+
+}))
+
+# write the all_mods table to file:
+write.csv(all_mods, row.names=FALSE, file=paste0(data_dir, 'all_spatial_modules.csv'))
+
+
+# manually checking for some genes
+subset(all_mods, gene_name == 'CSF1R')
+subset(all_mods, gene_name == 'CX3CR1')
+subset(all_mods, gene_name == 'AQP4')
+subset(all_mods, gene_name == 'GAD2')
+subset(all_mods, gene_name == 'APP')
+
+
+# only keep genes that are in the single-cell object
+all_mods <- subset(all_mods, gene_name %in% rownames(seurat_obj) & module != 'grey')
+
+# run the module projection function
+seurat_obj <- ScaleData(seurat_obj, features=rownames(seurat_obj)[1:100])
+seurat_obj <- ProjectModules(
+  seurat_obj,
+  modules = all_mods,
+  group.by.vars = "Batch",
+  seurat_ref = NULL,
+  wgcna_name = "None",
+  wgcna_name_proj = 'spatial'
+)
+
+
+# save the single-cell dataset
+saveRDS(seurat_obj, file=paste0(data_dir, 'ADDS_AD_integrated_hdWGCNA.rds'))
+seurat_obj <- readRDS(file=paste0(data_dir, 'ADDS_AD_integrated_hdWGCNA.rds'))
+
+
+##########################################################
+# DotPlot
+##########################################################
+
+MEs <- GetMEs(seurat_obj)
+modules <- GetModules(seurat_obj)
+mods <- levels(modules$module)
+mods <- mods[mods!='grey']
+
+# add region column:
+modules$region <- do.call(rbind, strsplit(as.character(modules$module), '-'))[,1]
+
+meta <- seurat_obj@meta.data
+seurat_obj@meta.data <- cbind(meta, MEs)
+
+plot_list <- list()
+for(cur_region in unique(modules$region)){
+    print(cur_region)
+    cur_modules <- subset(modules, region == cur_region)
+
+    mods <- paste0(cur_region, '-M', 1:length(unique(cur_modules$module)))
+    cur_modules$module <- factor(as.character(cur_modules$module), levels=mods)
+
+    # make dotplot
+    plot_list[[cur_region]] <- DotPlot(
+        seurat_obj,
+        group.by='cell_type',
+        features = mods
+        )  + RotatedAxis() +
+        scale_color_gradient2(high='red', mid='grey95', low='blue') + xlab('') + ylab('') +
+        theme(
+            plot.title = element_text(hjust = 0.5),
+            axis.line.x = element_blank(),
+            axis.line.y = element_blank(),
+            panel.border = element_rect(colour = "black", fill=NA, size=1)
+        ) + ggtitle(cur_region)
+
+}
+
+
+pdf(paste0(fig_dir, 'projected_MEs_dotplot_all.pdf'), width=9, height=5)
+for(p in plot_list){
+    print(p)
+}
+dev.off()
+
+# remove from seurat obj
+#seurat_obj@meta.data <- cbind(seurat_obj@meta.data, MEs)
+
+seurat_obj@meta.data <- meta
+
+
+```
+
+
+Try to hierarchically cluster modules similarly to the Hartl et al Nature Neuro 2021 paper
+
+
+Compute module-module overlaps for all of the PFC modules with GeneOverlap
+
+```{r eval=FALSE}
+
+library(GeneOverlap)
+
+groups <- c('L1', 'L2-3', 'L3-4', 'L3-4-5', 'L5-6', 'L6b', 'WM')
+genes_use <- GetWGCNAGenes(seurat_human, 'L1')
+
+all_mods <- Reduce(rbind, lapply(groups, function(x){
+
+    cur_mods <- GetModules(seurat_human, wgcna_name = x)[,1:3]
+    cur_mods <- cur_mods[genes_use,]
+    cur_mods$gene_name <- genes_use
+    cur_mods$module <- ifelse(is.na(cur_mods$module), 'grey' , as.character(cur_mods$module))
+    cur_mods$color <- ifelse(is.na(cur_mods$color), 'grey' , as.character(cur_mods$color))
+    
+    cur_mods <- cur_mods %>% 
+    dplyr::select(c(gene_name, module, color)) 
+    cur_mods 
+
+}))
+all_mods <- subset(all_mods, gene_name %in% rownames(seurat_obj) & module != 'grey')
+all_mods$region <- do.call(rbind, strsplit(as.character(all_mods$module), '-'))[,1]
+
+
+# set factor levels:
+mod_levels <- c()
+for(cur_group in groups){
+    cur_group <- gsub('-', '', cur_group)
+    cur_modules <- subset(all_mods, region == cur_group)
+    cur_mods <- paste0(cur_group, '-M', 1:length(unique(cur_modules$module)))
+    mod_levels <- c(mod_levels, cur_mods)
+}
+all_mods$module <- factor(as.character(all_mods$module), levels=mod_levels)
+
+
+modules <- all_mods
+
+
+m1 <- modules
+m2 <- modules
+
+mods1 <- levels(m1$module); mods1 <- mods1[mods1 != 'grey']
+mods2 <- levels(m2$module); mods2 <- mods2[mods2 != 'grey']
+
+genome.size <- nrow(seurat_obj)
+
+
+# run overlaps between module gene lists and DEG lists:
+overlap_df <- do.call(rbind, lapply(mods1, function(cur_mod1){
+  cur_m1_genes <- m1 %>% subset(module == cur_mod1) %>% .$gene_name
+  cur_overlap_df <- do.call(rbind, lapply(mods2, function(cur_mod2){
+    print(paste0(cur_mod1, ' ', cur_mod2))
+    cur_m2_genes <- m2 %>% subset(module == cur_mod2) %>% .$gene_name
+    cur_overlap <- testGeneOverlap(newGeneOverlap(
+        cur_m1_genes,
+        cur_m2_genes,
+        genome.size=genome.size
+    ))
+    c(cur_overlap@odds.ratio, cur_overlap@pval, cur_overlap@Jaccard, length(cur_overlap@intersection))
+  })) %>% as.data.frame
+  colnames(cur_overlap_df) <- c('odds_ratio', 'pval', 'Jaccard', 'size_intersection')
+  cur_overlap_df$m1 <- cur_mod1
+  cur_overlap_df$m2 <- mods2
+
+  # module color:
+  #cur_overlap_df$color <- modules %>% subset(module == cur_mod) %>% .$color %>% unique
+  cur_overlap_df
+}))
+
+
+maxval <- 75
+test <- overlap_df %>% dplyr::select(c(m1,m2,odds_ratio)) %>% spread(m1,odds_ratio)
+test <- as.matrix(test[,-1])
+rownames(test) <- colnames(test)
+test[upper.tri(test)] <- 0
+test <- as.data.frame(test)
+test$m1 <- colnames(test)
+plot_df <- test %>% gather(colnames(test)[1:ncol(test)-1], key=m2, value=odds_ratio )
+#plot_df$odds_ratio <- ifelse(plot_df$odds_ratio == Inf, 0, plot_df$odds_ratio)
+plot_df$odds_ratio <- ifelse(plot_df$odds_ratio > maxval, maxval, plot_df$odds_ratio)
+
+p <- plot_df %>%
+  ggplot(aes(x=m1, y=m2, fill=odds_ratio)) +
+  geom_tile() +
+  #geom_text(label=plot_df$Significance, vjust = 0.72, color=plot_df$textcolor) +
+  scale_fill_gradient2(mid = 'grey90', low='grey90', high='darkorchid3', midpoint=5) +
+  RotatedAxis() +
+  labs(fill = 'OR') +
+  theme(
+    panel.border = element_rect(fill=NA, color='black', size=1),
+    axis.line.x = element_blank(),
+    axis.line.y = element_blank(),
+    axis.title.x = element_blank(),
+    axis.title.y = element_blank(),
+    axis.text.x = element_text(size=6),
+    #axis.ticks.x = element_blank(),
+    axis.text.y = element_text(size=6),
+   # axis.ticks.y = element_blank(),
+    plot.margin=margin(0,0,0,0)
+  ) +
+  coord_equal() + RotatedAxis()
+
+
+pdf(paste0(fig_dir, 'mod-mod_overlap.pdf'), width=15, height=15)
+p 
+dev.off()
+
+
+maxval <- 0.5
+test <- overlap_df %>% dplyr::select(c(m1,m2,Jaccard)) %>% spread(m1,Jaccard)
+test <- as.matrix(test[,-1])
+rownames(test) <- colnames(test)
+test[lower.tri(test)] <- 0
+test <- as.data.frame(test)
+test$m1 <- colnames(test)
+plot_df2 <- test %>% gather(colnames(test)[1:ncol(test)-1], key=m2, value=Jaccard )
+#plot_df$odds_ratio <- ifelse(plot_df$odds_ratio == Inf, 0, plot_df$odds_ratio)
+plot_df2$Jaccard <- ifelse(plot_df2$Jaccard > maxval, maxval, plot_df2$Jaccard)
+
+
+p <- plot_df2 %>%
+  ggplot(aes(x=m1, y=m2, fill=Jaccard)) +
+  geom_tile() +
+  #geom_tile(data=plot_df, aes(m1,m2,fill=odds_ratio), inherit.aes=FALSE) +
+  #geom_text(label=plot_df$Significance, vjust = 0.72, color=plot_df$textcolor) +
+  scale_fill_gradient(low='grey90', high='seagreen', limits=c(0,0.5)) +
+  RotatedAxis() +
+  labs(fill = 'JC') +
+  theme(
+    panel.border = element_rect(fill=NA, color='black', size=1),
+    axis.line.x = element_blank(),
+    axis.line.y = element_blank(),
+    axis.title.x = element_blank(),
+    axis.title.y = element_blank(),
+    axis.text.x = element_text(size=6),
+    #axis.ticks.x = element_blank(),
+    axis.text.y = element_text(size=6),
+   #axis.ticks.y = element_blank(),
+    plot.margin=margin(0,0,0,0)
+  ) +
+  coord_equal() + RotatedAxis()
+
+
+pdf(paste0(fig_dir, 'mod-mod_overlap_Jaccard.pdf'), width=15, height=15)
+p 
+dev.off()
+
+# calculate the median jaccard index:
+overlap_df$ct1 <- do.call(rbind, strsplit(overlap_df$m1, '-'))[,1]
+overlap_df$ct2 <- do.call(rbind, strsplit(overlap_df$m2, '-'))[,1]
+subset(overlap_df, ct1 != ct2) %>% .$Jaccard %>% quantile
+
+
+########################################################################################
+# Correlation of module eigengenes 
+########################################################################################
+
+# get the modules
+groups <- c('L1', 'L2-3', 'L3-4', 'L3-4-5', 'L5-6', 'L6b', 'WM')
+MEs <- Reduce(cbind, lapply(groups, function(x){
+    z <- GetMEs(seurat_human, x, harmonized=TRUE)
+    z[,colnames(z) != 'grey']
+}))
+
+
+# correlate MEs in each of the brain regions
+groups <- levels(seurat_human$annotation)
+mm_cor <- Reduce(rbind, lapply(groups, function(x){
+    cur_spots <- seurat_human@meta.data %>% subset(annotation == x) %>% rownames
+    z <- qlcMatrix::corSparse(
+        X = as.matrix(MEs[cur_spots,]),
+        Y = as.matrix(MEs[cur_spots,])
+    ) 
+    colnames(z) <- colnames(MEs)
+    rownames(z) <- colnames(MEs)
+    z <-  reshape2::melt(z)
+    z$group <- x
+    z$pair <- paste0(z$Var1, '_', z$Var2)
+    z
+}))
+head(mm_cor)
+
+# take the component-wise maximum correlation across each of the regions
+test <- mm_cor %>% 
+    group_by(pair) %>% 
+    mutate(val = max(value)) %>% 
+    ungroup %>% 
+    select(c(Var1, Var2, val)) %>% 
+    distinct %>% 
+    spread(Var1, val) 
+test <- as.matrix(test[,-1])
+rownames(test) <- colnames(test)
+
+# re-order:
+test <- test[levels(modules$module), levels(modules$module)]
+E <- test
+
+# set up Jaccard matrix:
+J <- overlap_df %>% select(c(m1,m2,Jaccard)) %>% spread(m1,Jaccard)
+J <- as.matrix(J[,-1])
+rownames(J) <- colnames(J)
+J <- J[rownames(E), colnames(E)]
+
+# compute the dissimilarity matrix:
+D = 1 - ((E + (3*J))/4)
+D_st <- D
+
+dist_mat <- dist(D, method = 'euclidean')
+hclust_avg <- hclust(dist_mat, method = 'average')
+
+pdf(paste0(fig_dir, 'test_module_hierarchy.pdf'), width=15, height=5)
+plot(hclust_avg, cex=0.5, hang=-1)
+dev.off()
+
+
+mod_cut <- cutree(hclust_avg, h=seq(1,2,0.1)) 
+
+# range(metamodules[,4])
+
+# make the metamodules:
+meta_assignments <- mod_cut[,6]
+#meta_assignments <- mod_cut[,6]
+table(meta_assignments)
+
+mod_cut <- cutree(hclust_avg, h=1.45) 
+table(mod_cut)
+
+dend <- as.dendrogram(hclust_avg)
+library(dendextend)
+# labels(dend) <- x[order.dendrogram(dend)]
+
+pdf(paste0(fig_dir, 'test_module_hierarchy.pdf'), width=15, height=5)
+for(cut_height in seq(1,2,0.1)){
+    dend1 <- color_branches(dend, h=cut_height)
+    dend1 <- color_labels(dend1, h=cut_height)
+    print(plot(dend1, main = paste0('cut height: ', cut_height), cex=0.3))
+}
+dev.off()
+
+
+
+cut_height=1.4
+dend1 <- color_branches(dend, h=cut_height)
+dend1 <- color_labels(dend1, h=cut_height)
+
+mod_cut <- cutree(dend1, h=cut_height)
+mod_cut_full <- mod_cut 
+table(mod_cut)
+
+mod_cut_full[mod_cut_full == 8] <- 7
+
+
+
+##########################################
+# take this and sub-cluster cuts 1 
+##########################################
+
+D_sub <- D[mod_cut_full == 3, mod_cut_full == 3]
+dist_mat_sub <- dist(D_sub, method = 'euclidean')
+hclust_sub <- hclust(dist_mat_sub, method = 'average')
+dend_sub <- as.dendrogram(hclust_sub)
+
+pdf(paste0(fig_dir, 'test_module_hierarchy_1.pdf'), width=10, height=5)
+for(cut_height in seq(0.8,1.3,0.05)){
+    dend1 <- color_branches(dend_sub, h=cut_height)
+    dend1 <- color_labels(dend1, h=cut_height)
+    print(plot(dend1, main = paste0('cut height: ', cut_height), cex=0.3))
+}
+dev.off()
+
+# need to manually merge the singletons to their nearest branch
+cut_height=1.15
+dend1 <- color_branches(dend_sub, h=cut_height)
+dend1 <- color_labels(dend1, h=cut_height)
+
+mod_cut <- cutree(dend1, h=cut_height)
+mod_cut1 <- mod_cut
+table(mod_cut1)
+
+# 5,8,9,10,11
+
+mod_cut1[names(mod_cut1) == 'L1-M20']
+mod_cut1[names(mod_cut1) == 'L6b-M19']
+
+# 5 <- 4
+mod_cut1[mod_cut1 == 5]
+
+mod_cut1[mod_cut1 == 8]
+
+# 9 <- 1
+mod_cut1[mod_cut1 == 9]
+
+
+mod_cut1[mod_cut1 == 10]
+mod_cut1[mod_cut1 == 11]
+
+# merge 8,10 into a new one
+mod_cut1[mod_cut1 %in% c(8,10)] <- 1
+
+mod_cut1[mod_cut1 == 9] <- 1
+mod_cut1[mod_cut1 == 5] <- 4
+mod_cut1[mod_cut1 == 11] <- 4
+
+# rename
+tmp <- names(mod_cut1)
+mod_cut1 <- paste0('3.', as.character(mod_cut1))
+names(mod_cut1) <- tmp
+
+
+tmp <- c('L6b-M19', 'L345-M27', 'WM-M25', 'L23-M6')
+
+
+##########################################
+# take this and sub-cluster cuts 2
+##########################################
+
+D_sub <- D[mod_cut_full == 1, mod_cut_full == 1]
+dist_mat_sub <- dist(D_sub, method = 'euclidean')
+hclust_sub <- hclust(dist_mat_sub, method = 'average')
+dend_sub <- as.dendrogram(hclust_sub)
+
+pdf(paste0(fig_dir, 'test_module_hierarchy_12.pdf'), width=10, height=5)
+for(cut_height in seq(1.1,1.35,0.01)){
+    dend1 <- color_branches(dend_sub, h=cut_height)
+    dend1 <- color_labels(dend1, h=cut_height)
+    print(plot(dend1, main = paste0('cut height: ', cut_height), cex=0.3))
+}
+dev.off()
+
+cut_height=1.3
+dend1 <- color_branches(dend_sub, h=cut_height)
+dend1 <- color_labels(dend1, h=cut_height)
+
+mod_cut <- cutree(dend1, h=cut_height)
+mod_cut2 <- mod_cut
+table(mod_cut2)
+mod_cut2
+
+# need to manually merge the singletons to their nearest branch
+mod_cut2[mod_cut2 == 5] <- 4
+
+# rename
+tmp <- names(mod_cut2)
+mod_cut2 <- paste0('1.', as.character(mod_cut2))
+names(mod_cut2) <- tmp
+
+
+##########################################
+# combine the three different cuts
+##########################################
+
+# rename
+tmp <- names(mod_cut_full)
+mod_cut_full <- paste0('0.', as.character(mod_cut_full))
+names(mod_cut_full) <- tmp
+
+mod_cut_full[names(mod_cut1)] <- mod_cut1
+mod_cut_full[names(mod_cut2)] <- mod_cut2
+
+
+##########################################
+# Plot a circular dendrogram
+##########################################
+
+library(circlize)
+library(dendextend)
+
+dend <- as.dendrogram(hclust_avg)
+# labels(dend) <- x[order.dendrogram(dend)]
+
+dend_colors <- WGCNA::labels2colors(mod_cut_full)
+names(dend_colors) <- names(mod_cut_full)
+dend_colors <- dend_colors[labels(dend)]
+
+dend <- dend %>% 
+    set('leaves_pch', 19) %>%
+    set('leaves_col', dend_colors)
+
+
+
+pdf(paste0(fig_dir, 'test_module_hierarchy_circle2.pdf'), width=10, height=10)
+circlize_dendrogram(
+    dend,
+    labels_track_height=NA,
+    dend_track_height=0.4
+)
+dev.off()
+
+'L6b-M19' %in% names(mod_cut1)
+
+# save all the dendrogram stuff:
+save(dend, hclust_avg, mod_cut_full, D, J, E, file=paste0(data_dir, 'dendro.rda'))
+load(paste0(data_dir, 'dendro.rda'))
+
+##########################################
+# Make a new module table
+##########################################
+
+new_module_df <- data.frame()
+
+for(mod in unique(mod_cut_full)){
+    
+    cur_mods <- names(mod_cut_full[mod_cut_full == mod])
+    cur <- subset(all_mods, module %in% cur_mods) %>% 
+        mutate(module = droplevels(module))
+    cur_genes <- unique(cur$gene_name)
+
+    cur_new_df <- data.frame(
+        gene_name = cur_genes,
+        module = mod
+    )
+    new_module_df <- rbind(new_module_df, cur_new_df)
+
+}
+new_module_df$color <- WGCNA::labels2colors(new_module_df$module)
+
+# get kME values for each gene 
+groups <- c('L1', 'L2-3', 'L3-4', 'L3-4-5', 'L5-6', 'L6b', 'WM')
+all_kmes <- Reduce(rbind, lapply(groups, function(x){
+    GetHubGenes(seurat_human, Inf, wgcna_name=x)
+}))
+
+ix <- match(all_kmes$module, names(mod_cut_full))
+all_kmes$new_mod <- as.character(mod_cut_full)[ix]
+
+all_mods_reassigned <- all_kmes %>% group_by(gene_name) %>% slice_max(kME, n=1)
+
+all_mods_reassigned <- all_mods_reassigned %>% 
+    dplyr::select(c(gene_name, new_mod)) %>%
+    dplyr::rename(module = new_mod) %>% 
+    mutate(color = WGCNA::labels2colors(module)) %>%
+    mutate(module = as.factor(module))
+
+table(all_mods_reassigned$module)
+
+seurat_human <- SetActiveWGCNA(seurat_human, 'consensus')
+seurat_human <- SetModules(seurat_human, all_mods_reassigned)
+
+###################################################################################
+# Compute MEs and Connectivity for these modules
+##################################################################################
+
+seurat_human <- ModuleEigengenes(
+    seurat_human,
+    group.by.vars="Sample",
+)
+
+tmp <- as.data.frame(all_mods_reassigned)
+rownames(tmp) <- tmp$gene_name
+seurat_human <- SetModules(seurat_human, tmp)
+
+seurat_human <- ModuleConnectivity(
+    seurat_human,
+    reassign_modules=FALSE
+)
+
+# run RenameModules
+seurat_human <- ResetModuleNames(
+  seurat_human,
+  new_name = "M"
+)
+
+# module colors:
+seurat_human <- SetActiveWGCNA(seurat_human, 'consensus')
+modules <- GetModules(seurat_human)
+modules$color <- WGCNA::labels2colors(as.character(modules$module))
+seurat_human <- SetModules(seurat_human, modules)
+
+library(MetBrewer)
+
+modules <- GetModules(seurat_human)
+mods <- levels(modules$module)
+mod_colors <- dplyr::select(modules, c(module, color)) %>%
+  distinct %>% arrange(module) %>% .$color
+n_colors <- length(mod_colors) 
+
+new_colors <- paste0(met.brewer("Signac", n=n_colors, type='continuous'))
+new_colors <- sample(new_colors, n_colors)
+
+seurat_human <- ResetModuleColors(seurat_human, new_colors)
+
+
+unique(all_mods_reassigned$module)
+table(all_mods_reassigned$module)
+levels(all_mods_reassigned$module)
+
+# re-color the dendrogram:
+modules <- GetModules(seurat_human)
+mods <- levels(modules$module)
+mod_colors <- dplyr::select(modules, c(module, color)) %>%
+  distinct %>% arrange(module) %>% .$color
+names(mod_colors) <- levels(all_mods_reassigned$module)
+
+# dend_colors <- WGCNA::labels2colors(mod_cut_full)
+dend_colors <- mod_colors[mod_cut_full]
+names(dend_colors) <- names(mod_cut_full)
+dend_colors <- dend_colors[labels(dend)]
+
+dend <- dend %>% 
+   # set('leaves_pch', 19) %>%
+    set('leaves_col', dend_colors)
+
+
+saveRDS(seurat_human, file=paste0(data_dir, "ADDS_seurat_processed_annotated_hdWGCNA_all.rds"))
+
+
+###################################################################################
+# Run enrichr with these modules
+##################################################################################
+
+
+library(enrichR)
+
+dbs <-c('GO_Biological_Process_2021','GO_Cellular_Component_2021','GO_Molecular_Function_2021','WikiPathway_2021_Human', 'KEGG_2021_Human')
+
+# compute GO terms:
+seurat_human <- RunEnrichr(seurat_human, dbs=dbs, max_genes=Inf)
+
+# inspect the enrichr table:
+enrichr_df <- GetEnrichrTable(seurat_human) %>% subset(P.value < 0.05)
+enrichr_df$ngenes <- unlist(lapply(strsplit(enrichr_df$Genes, ';'), function(x){length(x)}))
+enrichr_df <- subset(enrichr_df, ngenes >= 3)
+
+write.table(enrichr_df, quote=FALSE, row.names=FALSE, sep='\t', file=paste0(data_dir, 'merged_human_vis_enrichr.tsv'))
+
+
+
+################################################################################
+# Plot selected GO terms:
+#################################################################################
+
+
+modules <- GetModules(seurat_human)
+color_df <- modules %>% subset(module!='grey') %>%
+  dplyr::select(c(module, color)) %>% distinct %>%
+  mutate(module=droplevels(module)) %>%
+  dplyr::rename(c(group=module, colour=color))
+mods <- levels(modules$module); mods <- mods[mods != 'grey']
+
+color_df$group <- factor(as.character(color_df$group), levels=mods)
+
+# helper function to wrap text
+wrapText <- function(x, len) {
+    sapply(x, function(y) paste(strwrap(y, len), collapse = "\n"), USE.NAMES = FALSE)
+}
+
+combined_output <- GetEnrichrTable(seurat_human)
+selected_terms <- read.delim('data/human_metamodule_selected_GO.txt', sep='\t', header=1)
+
+# subset selected terms
+combined_output$ngenes <- unlist(lapply(strsplit(combined_output$Genes, ';'), function(x){length(x)}))
+selected_terms <- subset(combined_output, Term %in% selected_terms$Term & P.value < 0.05 & ngenes > 2)
+
+
+selected_terms$group <- factor(
+  as.character(selected_terms$module),
+  levels = mods
+)
+
+# set max pval
+
+quantile(-log(selected_terms$P.value), 0.95)
+max_p <- 10
+
+selected_terms$logp <- -log(selected_terms$P.value)
+selected_terms$logp <- ifelse(selected_terms$logp > max_p, max_p, selected_terms$logp)
+
+# remove GO Term ID
+selected_terms$Term <- str_replace(selected_terms$Term, " \\s*\\([^\\)]+\\)", "")
+
+selected_terms <- selected_terms %>%
+  arrange(group)
+
+
+selected_terms$wrap <- wrapText(selected_terms$Term, 35)
+
+selected_terms$Term <- factor(
+  as.character(selected_terms$Term),
+  levels = rev(unique(as.character(selected_terms$Term)))
+)
+
+# GO Term dot plot
+
+p <- selected_terms %>%
+  ggplot(aes(x = group, y = Term, color =logp, size=log(Combined.Score))) +
+  geom_point() +
+  scale_color_stepsn(colors=rev(magma(256))) +
+  RotatedAxis() + xlab('') + ylab('') +
+  theme(
+    axis.title.x = element_blank(),
+    axis.title.y = element_blank(),
+    panel.border = element_rect(size=1, color='black', fill=NA),
+    axis.line.x = element_blank(),
+    axis.line.y = element_blank(),
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank(),
+    plot.margin = margin(0,0,0,0),
+    panel.grid = element_line(size=0.25, color='lightgrey')
+  )+ labs(
+    color = bquote("-log"[10]~"(P)"),
+    size= bquote("log"[10]~"(Enrich)")
+  )
+
+
+p <- selected_terms %>%
+  ggplot(aes(x = group, y = Term, color =logp, size=log(Combined.Score))) +
+  geom_point() +
+  scale_color_stepsn(colors=rev(magma(256))) +
+  RotatedAxis() + xlab('') + ylab('') +
+  coord_equal() +
+  theme(
+    axis.title.x = element_blank(),
+    axis.title.y = element_blank(),
+    panel.border = element_rect(size=1, color='black', fill=NA),
+    axis.line.x = element_blank(),
+    axis.line.y = element_blank(),
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank(),
+    plot.margin = margin(0,0,0,0),
+    panel.grid = element_line(size=0.25, color='lightgrey')
+  )+ labs(
+    color = bquote("-log"[10]~"(P)"),
+    size= bquote("log"[10]~"(Enrich)")
+  )
+
+
+
+# # make the colorbar as its own heatmap
+color_df$var <- 1
+cp <- color_df$colour; names(cp) <- color_df$group
+colorbar <- color_df %>%
+  subset(group %in% unique(selected_terms$group)) %>%
+  ggplot(aes(x=group, y=var, fill=group)) +
+  geom_tile() +
+  scale_fill_manual(values=cp) +
+  coord_equal() +
+  NoLegend() + RotatedAxis() +
+  theme(
+    plot.title=element_blank(),
+    axis.line=element_blank(),
+    axis.ticks.y =element_blank(),
+    axis.text.y = element_blank(),
+    axis.title = element_blank(),
+    plot.margin=margin(0,0,0,0),
+  )
+
+
+
+pdf(paste0(fig_dir, 'human_vis_selected_GO_terms_metamod_new.pdf'), width=7, height=7)
+p / colorbar
+dev.off()
+
+
+pdf(paste0(fig_dir, 'human_vis_selected_GO_terms_metamod.pdf'), width=8, height=7)
+p / colorbar
+dev.off()
+
+
+```
+
+test module umap? 
+
+```{r eval=FALSE}
+
+
+RunModuleUMAP <- function(
+  seurat_obj,
+  n_hubs = 10,
+  exclude_grey = TRUE,
+  genes_use = NULL,
+  wgcna_name = NULL,
+  n_neighbors= 25,
+  metric = "cosine",
+  spread=1,
+  min_dist=0.4,
+  supervised = FALSE,
+  ...
+){
+
+  if(is.null(wgcna_name)){wgcna_name <- seurat_obj@misc$active_wgcna}
+
+  # get modules,
+  modules <- GetModules(seurat_obj, wgcna_name)
+  mods <- levels(modules$module)
+
+  # check if we have eigengene-based connectivities:
+  if(!all(paste0('kME_', as.character(mods)) %in% colnames(modules))){
+    stop('Eigengene-based connectivity (kME) not found. Did you run ModuleEigengenes and ModuleConnectivity?')
+  }
+
+  # handle excluding grey module
+  if(exclude_grey){
+    mods <- mods[mods != 'grey']
+    modules <- subset(modules, module != 'grey')
+  }
+
+  # get hub genes:
+  hub_list <- lapply(mods, function(cur_mod){
+    cur <- subset(modules, module == cur_mod)
+    cur[,c('gene_name', paste0('kME_', cur_mod))] %>%
+      top_n(n_hubs) %>% .$gene_name
+  })
+  names(hub_list) <- mods
+
+  # get all genes that aren't in gray mod
+  selected_genes <- modules[modules$module %in% mods,'gene_name']
+
+  if(!is.null(genes_use)){
+    selected_genes <- selected_genes[selected_genes %in% genes_use]
+  } 
+
+  # get the TOM
+  TOM <- GetTOM(seurat_obj, wgcna_name)
+
+  # subset the TOM for umap
+  # keep all genes as rows, and keep only hubs as cols (features)
+  feature_mat <- TOM[selected_genes,unlist(hub_list)]
+
+  # run UMAP
+  if(supervised){
+    print('running supervised UMAP:')
+    hub_umap <-  uwot::umap(
+      X = feature_mat,
+      min_dist = min_dist,
+      n_neighbors= n_neighbors,
+      metric = metric,
+      spread=spread,
+      y = modules$module, # for supervised UMAP
+      ...
+    )
+  } else {
+    hub_umap <-  uwot::umap(
+      X = feature_mat,
+      min_dist = min_dist,
+      n_neighbors= n_neighbors,
+      metric = metric,
+      spread=spread,
+      ...
+    )
+  }
+
+
+  # set up plotting df
+  plot_df <- as.data.frame(hub_umap)
+  colnames(plot_df) <- c("UMAP1", "UMAP2")
+  plot_df$gene <- rownames(feature_mat)
+
+  # add module color, and hub gene status to the plotting df:
+  ix <- match(plot_df$gene, modules$gene_name)
+  plot_df$module <- modules$module[ix]
+  plot_df$color <- modules$color[ix]
+  plot_df$hub <- ifelse(
+    plot_df$gene %in% as.character(unlist(hub_list)), 'hub', 'other'
+  )
+
+  # get kME values for each gene
+  kMEs <- do.call(rbind, lapply(mods, function(cur_mod){
+    cur <- subset(modules, module == cur_mod)
+    cur <- cur[,c('gene_name', paste0('kME_', cur_mod))]
+    colnames(cur) <- c('gene_name', 'kME')
+
+    # scale kMEs between 0 & 1:
+    cur$kME <- scale01(cur$kME)
+    cur
+  }))
+  ix <- kMEs$gene_name[match(plot_df$gene, kMEs$gene_name)]
+  plot_df$kME <- kMEs[ix, 'kME']
+
+  # add the UMAP to the Seurat object:
+  seurat_obj <- SetModuleUMAP(seurat_obj, plot_df, wgcna_name)
+
+  seurat_obj
+}
+
+
+
+
+seurat_human <- RunModuleUMAP(
+  seurat_human,
+  n_hubs = 5,
+  genes_use = VariableFeatures(seurat_human),
+  n_neighbors=10,
+  min_dist=0.1,
+  spread=1,
+    target_weight=0.5,
+  supervised=TRUE
+)
+
+# get the hub gene UMAP table from the seurat object
+umap_df <- GetModuleUMAP(
+  seurat_human
+)
+
+# plot with ggplot
+p <- ggplot(umap_df, aes(x=UMAP1, y=UMAP2)) +
+  geom_point(
+   color=umap_df$color,
+   size=umap_df$kME*2
+  ) 
+
+pdf(paste0(fig_dir, 'hubgene_umap_ggplot_metamodule_selected.pdf'), width=5, height=5)
+p
+dev.off()
+
+# individual module networks
+ModuleNetworkPlot(
+  seurat_human,
+  outdir = paste0(fig_dir, 'metamod_hubNetworks/')
+)
+
+
+library(reshape2)
+library(igraph)
+pdf(paste0(fig_dir, 'hubgene_umap_igraph.pdf'), width=9, height=9)
+ModuleUMAPPlot(
+  seurat_human,
+  edge.alpha=0.5,
+  sample_edges=TRUE,
+  vertex.label.cex = 0.1, #font size
+  keep_grey_edges=FALSE,
+  edge_prop=0.1, # taking the top 20% strongest edges in each module
+  label_hubs=5 # how many hub genes to plot per module?
+)
+dev.off()
+
+pdf(paste0(fig_dir, 'hubgene_umap_igraph_unlabeled.pdf'), width=7, height=7)
+ModuleUMAPPlot(
+  seurat_human,
+  edge.alpha=0.5,
+  sample_edges=TRUE,
+  vertex.label.cex = 0.1, #font size
+  keep_grey_edges=FALSE,
+  edge_prop=0.15, # taking the top 20% strongest edges in each module
+  label_hubs=0 # how many hub genes to plot per module?
+)
+dev.off()
+
+
+
+```
+
+
+Project these modules into the single-cell dataset 
+
+```{r eval=FALSE}
+
+modules <- GetModules(seurat_human, 'consensus')
+
+seurat_obj <- ScaleData(seurat_obj, features=rownames(seurat_obj)[1:100])
+seurat_obj <- ProjectModules(
+  seurat_obj,
+  modules = modules,
+  group.by.vars = "Batch",
+  seurat_ref = NULL,
+  wgcna_name = "None",
+  wgcna_name_proj = 'consensus'
+)
+
+saveRDS(seurat_obj, file=paste0(data_dir, 'ADDS_AD_integrated_hdWGCNA.rds'))
+seurat_obj <- readRDS(file=paste0(data_dir, 'ADDS_AD_integrated_hdWGCNA.rds'))
+
+MEs <- GetMEs(seurat_obj)
+meta <- seurat_obj@meta.data
+seurat_obj@meta.data <- cbind(meta, MEs)
+mods <- colnames(MEs)
+
+# make dotplot
+p <- DotPlot(
+    seurat_obj,
+    group.by='cell_type',
+    features = mods
+    #scale=FALSE
+    )  + RotatedAxis() +
+    scale_color_gradient2(high='red', mid='grey95', low='blue') + xlab('') + ylab('') +
+    theme(
+        plot.title = element_text(hjust = 0.5),
+        axis.line.x = element_blank(),
+        axis.line.y = element_blank(),
+        panel.border = element_rect(colour = "black", fill=NA, size=1)
+    ) + ggtitle('meta-modules')
+
+pdf(paste0(fig_dir, 'projected_MEs_dotplot_metamodules.pdf'), width=7, height=4)
+p
+dev.off()
+
+seurat_obj@meta.data <- meta
+
+
+################################
+# DotPlot for the visium data 
+###############################
+
+
+MEs <- GetMEs(seurat_human)
+meta <- seurat_human@meta.data
+seurat_human@meta.data <- cbind(meta, MEs)
+mods <- colnames(MEs)
+
+# make dotplot
+p <- DotPlot(
+    seurat_human,
+    group.by='annotation',
+    features = mods,
+    #cluster.idents=TRUE,
+   # scale=FALSE
+    )  + RotatedAxis() +
+    scale_color_gradient2(high='red', mid='grey95', low='blue') + xlab('') + ylab('') +
+    theme(
+        plot.title = element_text(hjust = 0.5),
+        axis.line.x = element_blank(),
+        axis.line.y = element_blank(),
+        panel.border = element_rect(colour = "black", fill=NA, size=1)
+    ) + ggtitle('meta-modules')
+
+pdf(paste0(fig_dir, 'MEs_dotplot_metamodules.pdf'), width=7, height=4)
+p
+dev.off()
+
+seurat_human@meta.data <- meta
+
+```
+
+DME analysis 
+
+Compare condition vs control for each of the hdWGCNA modules in each of the annotations 
+
+```{r eval=FALSE}
+
+seurat_human$anno_DMEs <- ifelse(
+    grepl('WM', as.character(seurat_human$annotation)), 
+    'WM', as.character(seurat_human$annotation)
+)
+
+groups <- unique(seurat_human$anno_DMEs)
+wgcna_groups <- c('L1', 'L2-3', 'L3-4', 'L3-4-5', 'L5-6', 'L6b', 'WM', 'consensus')
+dx_list <- c('earlyAD', 'AD', 'AD_DS')
+combos <- expand.grid(groups, wgcna_groups, dx_list)
+
+DMEs <- Reduce(rbind, lapply(1:nrow(combos), function(i){
+    print(i)
+    cur_anno <- as.character(combos[i, 'Var1'])
+    cur_wgcna <- as.character(combos[i,'Var2'])
+    cur_dx <- as.character(combos[i, 'Var3'])
+
+    # get list of cells with these annotations / diagnosis
+    g1 <- seurat_human@meta.data %>% subset(anno_DMEs == cur_anno & Diagnosis == cur_dx) %>% rownames
+    g2 <- seurat_human@meta.data %>% subset(anno_DMEs == cur_anno & Diagnosis == 'Control') %>% rownames
+
+    # reset active WGCNA
+    seurat_human <- SetActiveWGCNA(seurat_human, cur_wgcna)
+
+    # run the DME comparison with a wilcox test
+    DMEs <- FindDMEs(
+        seurat_human,
+        barcodes1 = g1,
+        barcodes2 = g2,
+        test.use='wilcox'
+    )
+    DMEs$ident.1 <- cur_dx
+    DMEs$ident.2 <- 'Control'
+    DMEs$annotation <- cur_anno
+    DMEs$wgcna <- cur_wgcna
+    DMEs
+
+}))
+
+# save the DME results as a table:
+write.csv(DMEs, file=paste0(data_dir, 'differential_MEs_humanST.csv'), quote=FALSE, row.names=FALSE)
+DMEs <- read.csv(file=paste0(data_dir, 'differential_MEs_humanST.csv'))
+
+#DMEs %>% write.csv(file=paste0(data_dir, 'differential_MEs_humanST_match.csv'), quote=FALSE, row.names=FALSE)
+
+
+# set up DME data for circular dendro plotting:
+tmp <- subset(DMEs, annotation == wgcna) %>% 
+    dplyr::select(c(module, ident.1, avg_log2FC)) %>%
+    pivot_wider(names_from = ident.1, values_from = avg_log2FC) %>% 
+    as.data.frame()
+
+rownames(tmp) <- tmp$module
+tmp <- tmp[,2:ncol(tmp)]
+
+
+###################################################################
+# Correlate DMEs across conditions
+###################################################################
+
+# compute the number of genes in each module:
+groups <- c('L1', 'L2-3', 'L3-4', 'L3-4-5', 'L5-6', 'L6b', 'WM')
+all_mods <- Reduce(rbind, lapply(groups, function(x){
+
+    cur_mods <- GetModules(seurat_human, wgcna_name = x)[,1:3]
+
+    cur_mods$module <- ifelse(is.na(cur_mods$module), 'grey' , as.character(cur_mods$module))
+    cur_mods$color <- ifelse(is.na(cur_mods$color), 'grey' , as.character(cur_mods$color))
+    
+    cur_mods 
+
+}))
+all_mods <- all_mods %>% subset(module != 'grey') 
+mod_size <- table(all_mods$module)
+
+# get a map of module and color
+all_mods <- Reduce(rbind, lapply(groups, function(x){
+
+    cur_mods <- GetModules(seurat_human, wgcna_name = x)[,1:3]
+    #cur_mods <- cur_mods[genes_use,]
+    #cur_mods$gene_name <- genes_use
+    cur_mods$module <- ifelse(is.na(cur_mods$module), 'grey' , as.character(cur_mods$module))
+    cur_mods$color <- ifelse(is.na(cur_mods$color), 'grey' , as.character(cur_mods$color))
+    
+    cur_mods <- cur_mods %>% 
+    dplyr::select(c(module, color)) %>% 
+    distinct()
+
+    
+    cur_mods 
+
+}))
+all_mods <- all_mods %>% subset(module != 'grey') %>% distinct
+mod_colors <- all_mods$color; names(mod_colors) <- all_mods$module
+
+# load DME table
+DMEs <- read.csv(file=paste0(data_dir, 'differential_MEs_humanST.csv'))
+
+# AD info
+plot_df1 <- subset(DMEs, ident.1 %in% c('AD')) %>% 
+    dplyr::select(c(p_val_adj, avg_log2FC, module, annotation, wgcna)) %>% 
+    dplyr::arrange(module, annotation, wgcna)
+
+# ADDS info
+plot_df2 <- subset(DMEs, ident.1 %in% c('AD_DS')) %>% 
+    dplyr::arrange(module, annotation, wgcna) %>%
+    dplyr::select(c(p_val_adj, avg_log2FC))
+colnames(plot_df2) <- paste0(colnames(plot_df2), '2')
+
+# combine
+plot_df <- cbind(plot_df1, plot_df2) %>% 
+    subset(annotation == wgcna)
+
+# label the top 10 and bottom 10
+nlabel <- 5
+top_mods <- plot_df %>% mutate(x  = avg_log2FC + avg_log2FC2) %>%
+    slice_max(x, n=nlabel) %>% .$module %>% as.character
+bottom_mods <- plot_df %>% mutate(x  = avg_log2FC + avg_log2FC2) %>%
+    slice_min(x, n=nlabel) %>% .$module %>% as.character
+label_mods <- c(top_mods, bottom_mods)
+plot_df$anno <- ifelse(plot_df$module %in% label_mods, plot_df$module, NA)
+
+# set module factor level:
+plot_df$module <- factor(as.character(plot_df$module), levels=names(mod_colors))
+
+# add module sizes:
+plot_df$mod_size <- as.numeric(mod_size[as.character(plot_df$module)])
+
+plot_range <- max(max(abs(plot_df$avg_log2FC)), max(abs(plot_df$avg_log2FC2)))
+p <- plot_df %>% 
+    ggplot(aes(x = avg_log2FC, y = avg_log2FC2, color=module, size=log2(mod_size))) +
+    geom_hline(yintercept = 0, linetype='dashed', color='grey30') +
+    geom_vline(xintercept = 0, linetype='dashed', color='grey30',) +
+    ggrastr::rasterise(geom_point(alpha=0.7), dpi=500) +
+    geom_point(
+       inherit.aes=FALSE,
+       data=subset(plot_df, !is.na(anno)),
+       aes(avg_log2FC, avg_log2FC2, fill=module, size=log2(mod_size)),
+       shape=21, color='black'
+     ) +
+    geom_smooth(inherit.aes=FALSE, data=plot_df, mapping = aes(x = avg_log2FC, y = avg_log2FC2), method='lm', color='black') +
+    stat_cor(aes(label='..r.label..'), method='pearson') +
+    geom_text_repel(aes(label=anno), color='black',  min.segment.length=0, max.overlaps=Inf, size=5) +
+    scale_color_manual(values=mod_colors) +
+    scale_fill_manual(values=mod_colors) +
+    xlim(c(-plot_range, plot_range)) +
+    ylim(c(-plot_range, plot_range)) +
+    coord_equal() +
+    theme(
+      axis.line.x = element_blank(),
+      axis.line.y = element_blank(),
+      panel.border = element_rect(colour = "black", fill=NA, size=1),
+      plot.title = element_text(hjust=0.5),
+        panel.grid = element_line(size=0.25, color='white'),
+        panel.background = element_rect(fill='grey92'),
+    ) +
+    coord_fixed(ratio=1) + NoLegend() +
+    xlab(bquote("LAD Avg. log"[2]~"(FC)")) +
+    ylab(bquote("ADDS Avg. log"[2]~"(FC)")) 
+
+pdf(paste0(fig_dir, 'DME_cor_compare_AD_vs_ADDS.pdf'), width=3, height=3)
+p
+dev.off()
+
+##########################################################################
+# LAD vs EAD
+##########################################################################
+
+# AD info
+plot_df1 <- subset(DMEs, ident.1 %in% c('AD')) %>% 
+    dplyr::select(c(p_val_adj, avg_log2FC, module, annotation, wgcna)) %>% 
+    dplyr::arrange(module, annotation, wgcna)
+
+# ADDS info
+plot_df2 <- subset(DMEs, ident.1 %in% c('earlyAD')) %>% 
+    dplyr::arrange(module, annotation, wgcna) %>%
+    dplyr::select(c(p_val_adj, avg_log2FC))
+colnames(plot_df2) <- paste0(colnames(plot_df2), '2')
+
+# combine
+plot_df <- cbind(plot_df1, plot_df2) %>% 
+    subset(annotation == wgcna)
+
+# label the top 10 and bottom 10
+nlabel <- 5
+top_mods <- plot_df %>% mutate(x  = avg_log2FC + avg_log2FC2) %>%
+    slice_max(x, n=nlabel) %>% .$module %>% as.character
+bottom_mods <- plot_df %>% mutate(x  = avg_log2FC + avg_log2FC2) %>%
+    slice_min(x, n=nlabel) %>% .$module %>% as.character
+label_mods <- c(top_mods, bottom_mods)
+plot_df$anno <- ifelse(plot_df$module %in% label_mods, plot_df$module, NA)
+
+# set module factor level:
+plot_df$module <- factor(as.character(plot_df$module), levels=names(mod_colors))
+
+# add module sizes:
+plot_df$mod_size <- as.numeric(mod_size[as.character(plot_df$module)])
+
+plot_range <- max(max(abs(plot_df$avg_log2FC)), max(abs(plot_df$avg_log2FC2)))
+p <- plot_df %>% 
+    ggplot(aes(x = avg_log2FC, y = avg_log2FC2, color=module, size=log2(mod_size))) +
+    geom_hline(yintercept = 0, linetype='dashed', color='grey30') +
+    geom_vline(xintercept = 0, linetype='dashed', color='grey30',) +
+    ggrastr::rasterise(geom_point(alpha=0.7), dpi=500) +
+    geom_point(
+       inherit.aes=FALSE,
+       data=subset(plot_df, !is.na(anno)),
+       aes(avg_log2FC, avg_log2FC2, fill=module, size=log2(mod_size)),
+       shape=21, color='black'
+     ) +
+    geom_smooth(inherit.aes=FALSE, data=plot_df, mapping = aes(x = avg_log2FC, y = avg_log2FC2), method='lm', color='black') +
+    stat_cor(aes(label='..r.label..'), method='pearson') +
+    geom_text_repel(aes(label=anno), color='black',  min.segment.length=0, max.overlaps=Inf, size=5) +
+    scale_color_manual(values=mod_colors) +
+    scale_fill_manual(values=mod_colors) +
+    xlim(c(-plot_range, plot_range)) +
+    ylim(c(-plot_range, plot_range)) +
+    coord_equal() +
+    theme(
+      axis.line.x = element_blank(),
+      axis.line.y = element_blank(),
+      panel.border = element_rect(colour = "black", fill=NA, size=1),
+      plot.title = element_text(hjust=0.5),
+        panel.grid = element_line(size=0.25, color='white'),
+        panel.background = element_rect(fill='grey92'),
+    ) +
+    coord_fixed(ratio=1) + NoLegend() +
+    xlab(bquote("LAD Avg. log"[2]~"(FC)")) +
+    ylab(bquote("EAD Avg. log"[2]~"(FC)")) 
+
+pdf(paste0(fig_dir, 'DME_cor_compare_AD_vs_EAD.pdf'), width=3, height=3)
+p
+dev.off()
+
+
+##########################################################################
+# ADDS vs EAD
+##########################################################################
+
+# AD info
+plot_df1 <- subset(DMEs, ident.1 %in% c('earlyAD')) %>% 
+    dplyr::select(c(p_val_adj, avg_log2FC, module, annotation, wgcna)) %>% 
+    dplyr::arrange(module, annotation, wgcna)
+
+# ADDS info
+plot_df2 <- subset(DMEs, ident.1 %in% c('AD_DS')) %>% 
+    dplyr::arrange(module, annotation, wgcna) %>%
+    dplyr::select(c(p_val_adj, avg_log2FC))
+colnames(plot_df2) <- paste0(colnames(plot_df2), '2')
+
+# combine
+plot_df <- cbind(plot_df1, plot_df2) %>% 
+    subset(annotation == wgcna)
+
+# label the top 10 and bottom 10
+nlabel <- 5
+top_mods <- plot_df %>% mutate(x  = avg_log2FC + avg_log2FC2) %>%
+    slice_max(x, n=nlabel) %>% .$module %>% as.character
+bottom_mods <- plot_df %>% mutate(x  = avg_log2FC + avg_log2FC2) %>%
+    slice_min(x, n=nlabel) %>% .$module %>% as.character
+label_mods <- c(top_mods, bottom_mods)
+plot_df$anno <- ifelse(plot_df$module %in% label_mods, plot_df$module, NA)
+
+# set module factor level:
+plot_df$module <- factor(as.character(plot_df$module), levels=names(mod_colors))
+
+# add module sizes:
+plot_df$mod_size <- as.numeric(mod_size[as.character(plot_df$module)])
+
+plot_range <- max(max(abs(plot_df$avg_log2FC)), max(abs(plot_df$avg_log2FC2)))
+p <- plot_df %>% 
+    ggplot(aes(x = avg_log2FC, y = avg_log2FC2, color=module, size=log2(mod_size))) +
+    geom_hline(yintercept = 0, linetype='dashed', color='grey30') +
+    geom_vline(xintercept = 0, linetype='dashed', color='grey30',) +
+    ggrastr::rasterise(geom_point(alpha=0.7), dpi=500) +
+    geom_point(
+       inherit.aes=FALSE,
+       data=subset(plot_df, !is.na(anno)),
+       aes(avg_log2FC, avg_log2FC2, fill=module, size=log2(mod_size)),
+       shape=21, color='black'
+     ) +
+    geom_smooth(inherit.aes=FALSE, data=plot_df, mapping = aes(x = avg_log2FC, y = avg_log2FC2), method='lm', color='black') +
+    stat_cor(aes(label='..r.label..'), method='pearson') +
+    geom_text_repel(aes(label=anno), color='black',  min.segment.length=0, max.overlaps=Inf, size=5) +
+    scale_color_manual(values=mod_colors) +
+    scale_fill_manual(values=mod_colors) +
+    xlim(c(-plot_range, plot_range)) +
+    ylim(c(-plot_range, plot_range)) +
+    coord_equal() +
+    theme(
+      axis.line.x = element_blank(),
+      axis.line.y = element_blank(),
+      panel.border = element_rect(colour = "black", fill=NA, size=1),
+      plot.title = element_text(hjust=0.5),
+        panel.grid = element_line(size=0.25, color='white'),
+        panel.background = element_rect(fill='grey92'),
+    ) +
+    coord_fixed(ratio=1) + NoLegend() +
+    xlab(bquote("EAD Avg. log"[2]~"(FC)")) +
+    ylab(bquote("ADDS Avg. log"[2]~"(FC)")) 
+
+pdf(paste0(fig_dir, 'DME_cor_compare_EAD_vs_ADDS.pdf'), width=3, height=3)
+p
+dev.off()
+
+##########################################################################
+# TODO: upset plot comparing up- and down- regulated modules
+##########################################################################
+
+st_diag_cp <- c("Control" = "#B8DBC5", "earlyAD" = "#E7BDE1" , "AD" = "#CF8BA3", "AD_DS" = "#9E6D7F")
+
+
+library(UpSetR)
+
+DMEs <- read.csv(file=paste0(data_dir, 'differential_MEs_humanST.csv')) %>% 
+    subset(annotation == wgcna)
+
+
+# fold-change cutoff:
+fc_cutoff <- 0.25
+groups <- unique(DMEs$ident.1)
+DMEs$module <- factor(as.character(DMEs$module), levels=labels(dend))
+
+upset_list <- list()
+names <- c()
+for(cur_group in groups){
+  cur_df_up <- DMEs %>% subset(ident.1 == cur_group & p_val_adj < 0.05 & avg_log2FC > fc_cutoff)
+  cur_df_down <- DMEs %>% subset(ident.1 == cur_group & p_val_adj < 0.05 & avg_log2FC < -fc_cutoff)
+  upset_list[[paste0(cur_group, '_down')]] <- table(cur_df_down$module)
+  upset_list[[paste0(cur_group, '_up')]] <- table(cur_df_up$module)
+}
+
+sum((upset_list$AD_DS_up + upset_list$AD_up) == 2)
+sum((upset_df$AD_DS_up + upset_df$AD_up) == 2)
+sum((upset_df$AD_DS_up + upset_df$AD_up + upset_df$earlyAD_up) ==  3)
+sum((upset_df$AD_DS_down + upset_df$AD_down + upset_df$earlyAD_down) ==  3)
+
+
+# tmp <- c(paste0(groups, '_up'), paste0(groups, '_down'))
+# names <- tmp[order(tmp)]
+
+# combine into one df
+upset_df <- as.data.frame(Reduce(cbind, upset_list))
+colnames(upset_df) <- names(upset_list)
+
+# remove entries with all 0
+upset_df <- upset_df[rowSums(upset_df) > 0,]
+
+cur_colors <- st_diag_cp[groups]
+names(cur_colors) <- paste0(names(cur_colors), '_up')
+#cur_colors_down <- unlist(lapply(celltype_colors[groups], scales::muted))
+cur_colors_down <- st_diag_cp[groups]
+names(cur_colors_down) <- paste0(names(cur_colors_down), '_down')
+cur_colors <- c(cur_colors, cur_colors_down)
+cur_colors <- cur_colors[colnames(upset_df)]
+
+tmp 
+
+p <- UpSetR::upset(
+  upset_df,
+  sets=colnames(upset_df),
+  group.by='sets',
+  sets.bar.color=cur_colors,
+)
+
+
+
+
+pdf(paste0(fig_dir, 'DME_compare_upset.pdf'), width=6, height=5)
+p
+dev.off()
+
+
+##########################################################################
+# TODO: Spatial featureplot for module eigengenes
+##########################################################################
+
+```
+
+Metamodule DME heatmaps 
+
+```{r eval=FALSE}
+
+DMEs <- read.csv(file=paste0(data_dir, 'differential_MEs_humanST.csv')) %>% 
+    subset(wgcna == 'consensus')
+
+DMEs <- read.csv(file=paste0(data_dir, 'differential_MEs_humanST.csv'))
+
+test <- DMEs %>% subset(annotation == wgcna | wgcna == 'consensus') 
+
+ write.csv(test, file=paste0(data_dir, 'differential_MEs_humanST_match.csv'), quote=FALSE, row.names=FALSE)
+
+
+
+maxval <- 1; minval <- -1
+plot_df <- DMEs
+plot_df$avg_log2FC <- ifelse(plot_df$avg_log2FC > maxval, maxval, plot_df$avg_log2FC)
+plot_df$avg_log2FC <- ifelse(plot_df$avg_log2FC < minval, minval, plot_df$avg_log2FC)
+
+plot_df$textcolor <- ifelse(plot_df$avg_log2FC > 0.5, 'black', 'white')
+plot_df$Significance <- ifelse(plot_df$p_val_adj > 0.05, 'x', NA)
+
+# set factor levels:
+plot_df$module <- factor(as.character(plot_df$module), levels=mods)
+plot_df$ident.1 <- factor(as.character(plot_df$ident.1), levels=c('earlyAD', 'AD', 'AD_DS'))
+
+p <- plot_df %>% 
+  ggplot(aes(x=module, y=annotation, fill=avg_log2FC)) +
+  geom_tile() +
+  geom_text(label=plot_df$Significance, color=plot_df$textcolor) +
+  scale_fill_gradient2(low='purple', mid='black', high='yellow') +
+  RotatedAxis() +
+ # labs(fill = 'Odds ratio') +
+  theme(
+    panel.border = element_rect(fill=NA, color='black', size=1),
+    axis.line.x = element_blank(),
+    axis.line.y = element_blank(),
+    #axis.title.x = element_blank(),
+    #axis.title.y = element_blank(),
+    #axis.text.x = element_blank(),
+   # axis.ticks.x = element_blank(),
+   # axis.text.y = element_blank(),
+    #axis.ticks.y = element_blank(),
+    plot.margin=margin(0,0,0,0)
+  ) +
+  coord_equal() # + xlab(group1) + ylab(group2)
+
+
+# Plot the result
+pdf(paste0(fig_dir, 'DME_metamodule_heatmap.pdf'),height=7, width=5)
+p + facet_wrap(~ident.1, ncol=1)
+dev.off()
+
+
+```
+
+DMEs between Female & Male in AD/DS 
+
+```{r eval=FALSE}
+
+# re-load the sex downsamples object 
+
+name <- 'ADDS'
+name <- 'AD'
+name <- 'earlyAD'
+
+seurat_subset <- readRDS(file=paste0("/dfs7/swaruplab/smorabit/analysis/ADDS_2021/visium/human/data/", name, "_seurat_sex_downsampled.rds"))
+
+seurat_human$anno_DMEs <- ifelse(
+    grepl('WM', as.character(seurat_human$annotation)), 
+    'WM', as.character(seurat_human$annotation)
+)
+
+groups <- unique(seurat_human$anno_DMEs)
+wgcna_groups <- c('L1', 'L2-3', 'L3-4', 'L3-4-5', 'L5-6', 'L6b', 'WM', 'consensus')
+combos <- expand.grid(groups, wgcna_groups)
+
+DMEs <- Reduce(rbind, lapply(1:nrow(combos), function(i){
+    print(i)
+    cur_anno <- as.character(combos[i, 'Var1'])
+    cur_wgcna <- as.character(combos[i,'Var2'])
+
+    # get list of cells with these annotations / diagnosis
+    g1 <- seurat_human@meta.data %>% subset(anno_DMEs == cur_anno & Sex == 'F') %>% rownames
+    g2 <- seurat_human@meta.data %>% subset(anno_DMEs == cur_anno & Sex == 'M') %>% rownames
+
+    # make sure the list of barcodes are in the downsampled dataset 
+    g1 <- g1[g1 %in% colnames(seurat_subset)]
+    g2 <- g2[g2 %in% colnames(seurat_subset)]
+
+    # reset active WGCNA
+    seurat_human <- SetActiveWGCNA(seurat_human, cur_wgcna)
+
+    # run the DME comparison with a wilcox test
+    DMEs <- FindDMEs(
+        seurat_human,
+        barcodes1 = g1,
+        barcodes2 = g2,
+        test.use='wilcox'
+    )
+    DMEs$ident.1 <- 'F'
+    DMEs$ident.2 <- 'M'
+    DMEs$annotation <- cur_anno
+    DMEs$wgcna <- cur_wgcna
+    DMEs
+
+}))
+
+# save the DME results as a table:
+write.csv(DMEs, file=paste0(data_dir, 'differential_MEs_sex_', name, '_humanST.csv'), quote=FALSE, row.names=FALSE)
+
+
+
+###############################################################
+# Volcano Plot
+###############################################################
+
+
+
+name <- 'ADDS'
+name <- 'AD'
+name <- 'earlyAD'
+
+# re-load
+DMEs <- read.csv(file=paste0(data_dir, 'differential_MEs_sex_', name,'_humanST.csv'))
+
+
+# compute the number of genes in each module:
+groups <- c('L1', 'L2-3', 'L3-4', 'L3-4-5', 'L5-6', 'L6b', 'WM')
+all_mods <- Reduce(rbind, lapply(groups, function(x){
+
+    cur_mods <- GetModules(seurat_human, wgcna_name = x)[,1:3]
+
+    cur_mods$module <- ifelse(is.na(cur_mods$module), 'grey' , as.character(cur_mods$module))
+    cur_mods$color <- ifelse(is.na(cur_mods$color), 'grey' , as.character(cur_mods$color))
+    
+    cur_mods 
+
+}))
+all_mods <- all_mods %>% subset(module != 'grey') 
+mod_size <- table(all_mods$module)
+
+# get a map of module and color
+all_mods <- Reduce(rbind, lapply(groups, function(x){
+
+    cur_mods <- GetModules(seurat_human, wgcna_name = x)[,1:3]
+    #cur_mods <- cur_mods[genes_use,]
+    #cur_mods$gene_name <- genes_use
+    cur_mods$module <- ifelse(is.na(cur_mods$module), 'grey' , as.character(cur_mods$module))
+    cur_mods$color <- ifelse(is.na(cur_mods$color), 'grey' , as.character(cur_mods$color))
+    
+    cur_mods <- cur_mods %>% 
+    dplyr::select(c(module, color)) %>% 
+    distinct()
+
+    
+    cur_mods 
+
+}))
+all_mods <- all_mods %>% subset(module != 'grey') %>% distinct
+mod_colors <- all_mods$color; names(mod_colors) <- all_mods$module
+
+
+#DMEs <- read.csv(file=paste0(data_dir, 'differential_MEs_sex_humanST.csv')) 
+
+# p <- DMEs %>% 
+#   ggplot(aes(x=avg_log2FC, y=-log10(p_val_adj))) + 
+#   geom_hline(yintercept=-log10(0.05), linetype='dashed') +
+#   geom_point()
+
+plot_df <- DMEs %>% subset(annotation==wgcna)
+
+
+# label the top 10 and bottom 10
+nlabel <- 10
+top_mods <- plot_df %>% subset(p_val_adj < 0.05) %>%
+    slice_max(avg_log2FC, n=nlabel) %>% .$module %>% as.character
+bottom_mods <- plot_df %>% subset(p_val_adj < 0.05) %>%
+    slice_min(avg_log2FC, n=nlabel) %>% .$module %>% as.character
+label_mods <- c(top_mods, bottom_mods)
+plot_df$anno <- ifelse(plot_df$module %in% label_mods, plot_df$module, NA)
+
+print(top_mods)
+print(bottom_mods)
+
+# set module factor level:
+plot_df$module <- factor(as.character(plot_df$module), levels=names(mod_colors))
+
+# add module sizes:
+plot_df$mod_size <- as.numeric(mod_size[as.character(plot_df$module)])
+
+# add module color
+ix <- match(as.character(plot_df$module), names(mod_colors))
+plot_df$color <- as.character(mod_colors[ix])
+plot_df$color <- ifelse(plot_df$p_val_adj > 0.05, 'grey', plot_df$color)
+
+plot_range <- max(abs(range(plot_df$avg_log2FC)))
+
+p <- plot_df %>% 
+    ggplot(aes(x = avg_log2FC, y = -log10(p_val_adj), size=log2(mod_size)/2)) +
+      geom_hline(yintercept=-log10(0.05), linetype='dashed', color='black', linewidth=0.5) +
+    ggrastr::rasterise(geom_point(color=plot_df$color), dpi=500) +
+    geom_point(
+       inherit.aes=FALSE,
+       data=subset(plot_df, !is.na(anno)),
+       aes(avg_log2FC,-log10(p_val_adj),  size=log2(mod_size)/2),
+       fill = subset(plot_df, !is.na(anno)) %>% .$color,
+       shape=21, color='black'
+     ) +
+    geom_text_repel(aes(label=anno), color='black',  min.segment.length=0, max.overlaps=Inf, size=2) +
+    scale_color_manual(values=mod_colors) +
+    scale_fill_manual(values=mod_colors) +
+   # geom_smooth(inherit.aes=FALSE, data=plot_df, mapping = aes(x = avg_log2FC, y = avg_log2FC2), method='lm', color='black') +
+   # stat_cor(inherit.aes=FALSE, data=plot_df, mapping = aes(x = avg_log2FC, y = avg_log2FC2), method='pearson') +
+    xlim(c(-plot_range, plot_range)) +
+   # ylim(c(-plot_range, plot_range)) +
+    theme(
+      axis.line.x = element_blank(),
+      axis.line.y = element_blank(),
+      panel.border = element_rect(colour = "black", fill=NA, size=1),
+      plot.title = element_text(hjust=0.5),
+      panel.grid = element_line(size=0.25, color='white'),
+      panel.background = element_rect(fill='grey92'),
+    ) +
+   # coord_fixed(ratio=1) + 
+    NoLegend() +
+    xlab(bquote("F vs M Average log"[2]~"(FC)")) +
+     ylab(bquote("-log"[10]~"(Adj. P-value)")) 
+
+pdf(paste0(fig_dir, 'DME_sex_volcano_', name, '.pdf'), width=4, height=4)
+p
+dev.off()
+
+
+###############################################################
+# metamodule heatmap
+###############################################################
+
+
+name <- 'ADDS'
+name <- 'AD'
+name <- 'earlyAD'
+
+modules <- GetModules(seurat_human, 'consensus')
+mods <- levels(modules$module)
+
+DMEs <- read.csv(file=paste0(data_dir, 'differential_MEs_sex_', name,'_humanST.csv')) %>%
+  subset(wgcna == 'consensus')
+
+
+maxval <- 1.5; minval <- -1.5
+plot_df <- DMEs
+plot_df$avg_log2FC <- ifelse(plot_df$avg_log2FC > maxval, maxval, plot_df$avg_log2FC)
+plot_df$avg_log2FC <- ifelse(plot_df$avg_log2FC < minval, minval, plot_df$avg_log2FC)
+
+plot_df$textcolor <- ifelse(plot_df$avg_log2FC > 0.5, 'black', 'white')
+plot_df$Significance <- ifelse(plot_df$p_val_adj > 0.05, 'x', NA)
+#plot_df$Significance <- gtools::stars.pval(plot_df$p_val_adj)
+plot_df$alpha <- ifelse(plot_df$p_val_adj > 0.05, 0.25, 1)
+
+# set factor levels:
+plot_df$module <- factor(as.character(plot_df$module), levels=mods)
+plot_df$ident.1 <- factor(as.character(plot_df$ident.1), levels=c('earlyAD', 'AD', 'AD_DS'))
+
+#plot_df <- na.omit(plot_df)
+
+p <- plot_df %>% 
+  ggplot(aes(x=module, y=annotation, fill=avg_log2FC)) +
+  geom_tile(alpha=plot_df$alpha) +
+  geom_text(label=plot_df$Significance, color='black') +
+  scale_fill_gradient2(low='dodgerblue', mid='white', high='hotpink', limits=c(minval, maxval)) +
+  RotatedAxis() +
+ # labs(fill = 'Odds ratio') +
+  theme(
+    panel.border = element_rect(fill=NA, color='black', size=1),
+    axis.line.x = element_blank(),
+    axis.line.y = element_blank(),
+    plot.margin=margin(0,0,0,0)
+  ) +
+  coord_equal() + xlab('') + ylab('')
+
+
+# Plot the result
+pdf(paste0(fig_dir, 'DME_sex_metamodule_heatmap_', name, '.pdf'),height=3, width=5)
+p 
+dev.off()
+
+
+
+###############################################################
+# Scatter plot comparison of sex DMEs and diagnosis DMEs 
+###############################################################
+
+#name <- 'AD_DS'
+
+DMEs <- read.csv(file=paste0(data_dir, 'differential_MEs_sex_', name,'_humanST.csv'))
+DMEs_dx <- read.csv(file=paste0(data_dir, 'differential_MEs_humanST.csv')) %>% subset(ident.1 == name)
+
+DMEs_dx$id <- paste0(DMEs_dx$module, '_', DMEs_dx$annotation, '_', DMEs_dx$wgcna)
+DMEs$id <- paste0(DMEs$module, '_', DMEs$annotation, '_', DMEs$wgcna)
+
+plot_df <- dplyr::inner_join(
+  DMEs, 
+  DMEs_dx %>% dplyr::select(c(p_val_adj, avg_log2FC, id)), 
+  by = 'id'
+  ) %>% 
+  subset(annotation == wgcna)
+
+
+# set module factor level:
+plot_df$module <- factor(as.character(plot_df$module), levels=names(mod_colors))
+
+# add module sizes:
+plot_df$mod_size <- as.numeric(mod_size[as.character(plot_df$module)])
+
+# add module color
+ix <- match(as.character(plot_df$module), names(mod_colors))
+plot_df$color <- as.character(mod_colors[ix])
+#plot_df$color <- ifelse(plot_df$p_val_adj > 0.05, 'grey', plot_df$color)
+
+plot_range <- max(c(abs(range(plot_df$avg_log2FC.y)), abs(range(plot_df$avg_log2FC.x))))
+
+logfc_thresh <- 0.25
+
+up_right <- plot_df %>% subset(avg_log2FC.x >= logfc_thresh & avg_log2FC.y >= logfc_thresh & (p_val_adj.y <= 0.05 | p_val_adj.x <= 0.05)) %>% nrow
+down_right <- plot_df %>% subset(avg_log2FC.x >= logfc_thresh & avg_log2FC.y <= -logfc_thresh & (p_val_adj.y <= 0.05 | p_val_adj.x <= 0.05)) %>% nrow
+up_left <- plot_df %>% subset(avg_log2FC.x <= -logfc_thresh & avg_log2FC.y >= logfc_thresh & (p_val_adj.y <= 0.05 | p_val_adj.x <= 0.05)) %>% nrow
+down_left <- plot_df %>% subset(avg_log2FC.x <= -logfc_thresh & avg_log2FC.y <= -logfc_thresh & (p_val_adj.y <= 0.05 | p_val_adj.x <= 0.05)) %>% nrow
+
+annotations <- data.frame(
+        xpos = c(-Inf,-Inf,Inf,Inf),
+        ypos =  c(-Inf, Inf,-Inf,Inf),
+        annotateText = c(as.character(down_left),as.character(up_left), as.character(down_right),as.character(up_right)),
+        hjustvar = c(-1,-1,2,2),
+        vjustvar = c(-1,2,-1,2)) #<- adjust
+
+
+p <- plot_df %>% 
+  ggplot(aes(x=avg_log2FC.x, y=avg_log2FC.y, color=module, size=log2(mod_size)/2)) + 
+ geom_hline(yintercept = 0, linetype='dashed', color='black', linewidth=0.25) +
+  geom_vline(xintercept = 0, linetype='dashed', color='black', linewidth=0.25) +
+  ggrastr::rasterise(geom_point(), dpi=500) +
+  geom_smooth(inherit.aes=FALSE, data=plot_df, mapping = aes(x = avg_log2FC.x, y = avg_log2FC.y), method='lm', color='black') +
+    stat_cor(
+      inherit.aes=FALSE, 
+      data=plot_df, 
+      mapping = aes(x = avg_log2FC.x, y = avg_log2FC.y, label=..r.label..), 
+      label.y = plot_range * 0.75,
+      method='pearson') +
+    xlim(c(-plot_range, plot_range)) +
+    ylim(c(-plot_range, plot_range)) +
+    scale_color_manual(values=mod_colors) +
+    scale_size_continuous(range = c(0.5,4)) +
+    theme(
+      axis.line.x = element_blank(),
+      axis.line.y = element_blank(),
+      axis.title.y = element_blank(),
+      axis.title.x = element_blank(),
+      panel.border = element_rect(colour = "black", fill=NA, size=1),
+      plot.title = element_text(hjust=0.5),
+      panel.grid = element_line(size=0.25, color='white'),
+      panel.background = element_rect(fill='grey92'),
+    ) +
+    coord_fixed(ratio=1) + NoLegend() + 
+    geom_text(inherit.aes=FALSE, data=annotations,aes(x=xpos,y=ypos,hjust=hjustvar,vjust=vjustvar,label=annotateText))
+
+
+
+# Plot the result
+pdf(paste0(fig_dir, 'DME_sex_dx_compare_', name, '.pdf'), height=2.5, width=2.5)
+print(p)
+dev.off()
+
+
+
+
+```
+
+
+
+
+Module-trait correlation 
+
+```{r eval=FALSE}
+
+wgcna_groups <- c('L1', 'L2-3', 'L3-4', 'L3-4-5', 'L5-6', 'L6b', 'WM', 'consensus')
+traits <- c('Age', 'Sex')
+
+seurat_human$anno_DMEs <- ifelse(
+    grepl('WM', as.character(seurat_human$annotation)), 
+    'WM', as.character(seurat_human$annotation)
+)
+
+seurat_human$Sex <- factor(as.character(seurat_human$Sex), levels=c('F', 'M'))
+
+cor_df <- Reduce(rbind, lapply(wgcna_groups, function(cur_wgcna){
+    print(cur_wgcna)
+    seurat_human <- SetActiveWGCNA(seurat_human, cur_wgcna)
+
+    seurat_human <- ModuleTraitCorrelation(
+        seurat_human,
+        traits = traits,
+        group.by = 'anno_DMEs',
+        subset_groups = TRUE
+    )
+
+    mt_cor <- GetModuleTraitCorrelation(seurat_human)
+    mt_cor_df <- reshape2::melt(mt_cor$cor)
+    colnames(mt_cor_df) <- c('trait', 'module', 'cor', 'group')
+    mt_cor_df$wgcna <- cur_wgcna 
+    mt_cor_df
+
+}))
+
+#################################################
+# amyloid mt cor
+#################################################
+
+# load seurat object with amyloid info:
+seurat_amylo <- readRDS(file="/dfs7/swaruplab/smorabit/analysis/ADDS_2021/visium/human/voyager/data/ADDS_seurat_processed_geospatial.rds")
+
+# only plot samples that have amyloid scores:
+amyloid_samples <- seurat_amylo@meta.data %>%
+  dplyr::group_by(Sample) %>%
+  dplyr::summarise(Mean = mean(Amyloglo_Score_log)) %>%
+  dplyr::filter(Mean != 0) %>% .$Sample %>% as.character
+
+seurat_human$amyloid_sample <- seurat_human$Sample %in% amyloid_samples
+traits <- c('Amyloglo_Score_log', 'Amyloglo_Score_log_Gi', 'OC_Score_log', 'OC_Score_log_Gi')
+amylo_meta <- seurat_amylo@meta.data
+meta <- seurat_human@meta.data 
+seurat_human@meta.data <- cbind(meta, amylo_meta[,traits])
+
+conditions <- levels(seurat_human$Diagnosis)
+
+plot_df <- data.frame()
+for(cur_condition in conditions){
+  for(cur_wgcna in wgcna_groups){
+
+    print(cur_wgcna)
+    seurat_human <- SetActiveWGCNA(seurat_human, cur_wgcna)
+    seurat_human$amyloid_sample <- (seurat_human$Sample %in% amyloid_samples) & (seurat_human$Diagnosis == cur_condition)
+
+    seurat_human <- ModuleTraitCorrelation(
+        seurat_human,
+        traits = traits,
+        group.by = 'anno_DMEs',
+        subset_by = 'amyloid_sample',
+        subset_groups = TRUE
+    )
+
+    mt_cor <- GetModuleTraitCorrelation(seurat_human)
+
+    cor_df <- do.call(rbind, lapply(names(mt_cor$cor), function(x){
+        cur_cor <- mt_cor$cor[[x]]
+        cur_fdr <- mt_cor$fdr[[x]]
+        cur_cor_df <- reshape2::melt(cur_cor)
+        cur_fdr_df <- reshape2::melt(cur_fdr)
+        cur_cor_df$fdr <- cur_fdr_df$value
+        cur_cor_df$group <- x
+        cur_cor_df
+    }))
+    cor_df %<>% dplyr::rename(c(trait = Var1, module = Var2, cor=value))
+    cor_df$Diagnosis <- cur_condition 
+    cor_df$wgcna <- cur_wgcna
+
+    plot_df <- rbind(plot_df, cor_df)
+
+    }
+}
+
+write.csv(plot_df, file=paste0(data_dir, 'amylo_mtcor_humanST.csv'), quote=FALSE, row.names=FALSE)
+
+
+tmp <- rbind(cor_df, amylo_cor_df)
+write.csv(tmp, file=paste0(data_dir, 'mtcor_humanST.csv'), quote=FALSE, row.names=FALSE)
+
+tmp <- read.csv(file=paste0(data_dir, 'mtcor_humanST.csv'))
+
+
+#################################################
+# TODO: combine the amylo cor df and cor ddf into a matrix to plot with the dendro
+#################################################
+traits <- c('Amyloglo_Score_log', 'Amyloglo_Score_log_Gi', 'OC_Score_log', 'OC_Score_log_Gi')
+
+plot_df <- read.csv(file=paste0(data_dir, 'amylo_mtcor_humanST.csv'))
+
+plot_df <- subset(plot_df, trait %in% traits & wgcna == 'consensus' & group != 'all_cells')
+
+
+plot_df %>% subset(fdr < 0.05 & module == 'M11') %>% arrange(-cor) %>% head(25)
+plot_df %>% subset(fdr < 0.05) %>% arrange(-cor) %>% head(25)
+
+
+
+#---------------------------------------------------------------------
+# code from Seurat DotPlot
+#---------------------------------------------------------------------
+
+# get wgcna info 
+data.features <- GetMEs(seurat_human, wgcna_name='consensus') %>% as.data.frame()
+data.features$id <- seurat_human$anno_DMEs
+plot_df$id <- paste(plot_df$group, plot_df$Diagnosis, sep='_')
+
+
+
+split.by <- 'Diagnosis'
+scale <- TRUE
+col.min <- -2.5
+col.max <- 2.5
+dot.min <- 0
+
+data.features$id <- paste(seurat_human$anno_DMEs, seurat_human$Diagnosis, sep='_')
+
+data.plot <- lapply(
+    X = unique(x = data.features$id),
+    FUN = function(ident) {
+      data.use <- data.features[data.features$id == ident, 1:(ncol(x = data.features) - 1), drop = FALSE]
+      avg.exp <- apply(
+        X = data.use,
+        MARGIN = 2,
+        FUN = function(x) {
+          return(mean(x = expm1(x = x)))
+        }
+      )
+      pct.exp <- apply(X = data.use, MARGIN = 2, FUN = PercentAbove, threshold = 0)
+      return(list(avg.exp = avg.exp, pct.exp = pct.exp))
+    }
+  )
+names(x = data.plot) <- unique(x = data.features$id)
+id.levels <- levels(seurat_obj$cell_type)
+data.plot <- lapply(
+    X = names(x = data.plot),
+    FUN = function(x) {
+      data.use <- as.data.frame(x = data.plot[[x]])
+      data.use$features.plot <- rownames(x = data.use)
+      data.use$id <- x
+      return(data.use)
+    }
+  )
+  data.plot <- do.call(what = 'rbind', args = data.plot)
+  if (!is.null(x = id.levels)) {
+    data.plot$id <- factor(x = data.plot$id, levels = id.levels)
+  }
+  ngroup <- length(x = levels(x = data.plot$id))
+
+  avg.exp.scaled <- sapply(
+    X = unique(x = data.plot$features.plot),
+    FUN = function(x) {
+      data.use <- data.plot[data.plot$features.plot == x, 'avg.exp']
+      if (scale) {
+        data.use <- scale(x = log1p(data.use))
+        data.use <- MinMax(data = data.use, min = col.min, max = col.max)
+      } else {
+        data.use <- log1p(x = data.use)
+      }
+      return(data.use)
+    }
+  )
+  avg.exp.scaled <- as.vector(x = t(x = avg.exp.scaled))
+  data.plot$avg.exp.scaled <- avg.exp.scaled
+  
+  data.plot$pct.exp[data.plot$pct.exp < dot.min] <- NA
+  data.plot$pct.exp <- data.plot$pct.exp * 100
+
+# match with the other table
+data.plot <- subset(data.plot, id %in% plot_df$id)
+
+# merge the DFs
+data.plot$ix <- paste0(data.plot$features.plot, '_', data.plot$id)
+plot_df$ix <- paste0(plot_df$module, '_', plot_df$id)
+
+ix <- match(plot_df$ix, data.plot$ix, )
+all.equal(plot_df$ix, data.plot$ix[ix])
+
+plot_df$avg.exp <- data.plot$avg.exp[ix]
+plot_df$avg.exp.scaled <- data.plot$avg.exp.scaled[ix]
+plot_df$pct.exp <- data.plot$pct.exp[ix]
+
+
+
+plot_df$Significance <- ifelse(plot_df$fdr > 0.05, 'x', NA)
+
+modules <- GetModules(seurat_human, wgcna_name = 'consensus')
+mods <- levels(modules$module)
+plot_df$module <- factor(as.character(plot_df$module), levels=mods)
+
+
+plot_range <- plot_df %>% .$cor %>% range
+size_range <- plot_df %>% .$pct.exp %>% range
+
+# loop through Studies & diagnosis
+diagnoses <- unique(as.character(seurat_human$Diagnosis))
+plot_list <- list()
+for(cur_diag in diagnoses){
+ 
+    cur_df <- plot_df %>% subset(Diagnosis == cur_diag & trait %in% c('Amyloglo_Score_log_Gi', 'OC_Score_log_Gi'))
+
+    p <-cur_df %>%
+        ggplot(aes(x = module, y = group, color=cor, size=pct.exp)) + 
+        geom_point() + 
+        scale_color_gradient2(high='red', mid='white', low='blue', limits=plot_range) + 
+        scale_size_continuous(limits=size_range) +
+        geom_text(aes(label=Significance), color='black', size=3) +
+        coord_equal() +
+        RotatedAxis() +
+        ylab(paste0(cur_diag)) + 
+        theme(
+            axis.line.x = element_blank(),
+            axis.line.y = element_blank(),
+            panel.border = element_rect(linewidth=1, color='black', fill=NA),
+            axis.title.x = element_blank(),
+            axis.title.y = element_text(angle=0, vjust=0.5),
+            plot.title = element_text(hjust=0.5),
+            panel.grid = element_line(size=0.25, color='lightgrey'),
+            plot.margin = margin(c(0,0,0,0)),
+            
+        ) 
+
+    if(length(plot_list) > 0){
+        p <- p + theme(
+            axis.text.x = element_blank(),
+            axis.ticks.x = element_blank(),
+        )
+    }
+
+    patch <- p + facet_wrap(~trait, ncol=4)
+
+    plot_list[[cur_diag]] <- patch
+
+}
+
+
+pdf(paste0(fig_dir, 'MT_cor_heatmap_consensus_visium_dotplot_amylo.pdf'), width=12, height=8)
+wrap_plots(rev(plot_list), ncol=1) + plot_layout(guides='collect')
+dev.off()
+
+
+
+
+
+
+
+
+
+```
+
+
+Test plot circular dendrogram with heatmap using the circlized package
+
+```{r eval=FALSE}
+
+library(circlize)
+library(dendextend)
+
+load(paste0(data_dir, 'dendro.rda'))
+
+##########################################
+# Plot a circular dendrogram
+###
+
+dend <- as.dendrogram(hclust_avg)
+# labels(dend) <- x[order.dendrogram(dend)]
+
+dend_colors <- WGCNA::labels2colors(mod_cut_full)
+names(dend_colors) <- names(mod_cut_full)
+dend_colors <- dend_colors[labels(dend)]
+
+dend <- dend %>% 
+    set('leaves_pch', 19) %>%
+    set('leaves_col', dend_colors) %>%
+    dendextend::rotate(names(sort(mod_cut_full)))
+
+
+# reorder labels:
+# mod_cut_full[sort(mod_cut_full)]
+
+pdf(paste0(fig_dir, 'test_module_hierarchy_circle3_today.pdf'), width=10, height=10)
+circlize_dendrogram(
+    dend,
+    labels_track_height=NA,
+    dend_track_height=0.4
+)
+dev.off()
+
+
+# try making it with the circlize package 
+labels <- labels(dend)
+ct <- mod_cut_full
+n <- length(labels)
+pdf(paste0(fig_dir, 'test_module_hierarchy_circlize.pdf'), width=10, height=10)
+
+###circos.par(cell.padding = c(0,0,0,0))
+circos.initialize("a", xlim=c(0,n))
+
+circos.track(ylim = c(0, 1), bg.border = NA, track.height = 0.3, 
+    panel.fun = function(x, y) {
+        for(i in seq_len(n)) {
+            circos.text(i-0.5, 0, labels[i], adj = c(0, 0.5), 
+                facing = "clockwise", niceFacing = TRUE,
+                col = 'black', cex = 0.5)
+        }
+})
+
+dend_height = attr(dend, "height")
+circos.track(ylim = c(0, dend_height), bg.border = NA, 
+    track.height = 0.4, panel.fun = function(x, y) {
+        circos.dendrogram(dend)
+})
+circos.clear()
+dev.off()
+
+#####################################################################3
+# make the circlize dendro with DME heamtap
+#####################################################################
+
+DMEs <- read.csv(file=paste0(data_dir, 'differential_MEs_humanST.csv'))
+
+# set up DME data for circular dendro plotting:
+tmp <- subset(DMEs, annotation == wgcna) %>% 
+    dplyr::select(c(module, ident.1, avg_log2FC)) %>%
+    pivot_wider(names_from = ident.1, values_from = avg_log2FC) %>% 
+    as.data.frame()
+
+rownames(tmp) <- tmp$module
+tmp <- tmp[,2:ncol(tmp)]
+
+
+mat <- as.matrix(tmp)[labels(dend),]
+
+# clip values
+min_val <- -1 
+max_val <- 1
+
+mat[mat > max_val] <- max_val
+mat[mat < min_val] <- min_val
+
+#mat = matrix(rnorm(n*3), nrow = n, ncol = 3)
+#mat2 = matrix(rnorm(n*3), nrow = n, ncol = 3)
+
+col_fun = colorRamp2(c(min_val, 0, max_val), c("purple", "black", "yellow"))
+#col_fun2 = colorRamp2(c(-2, 0, 2), c("green", "black", "red"))
+
+# sectors = rep(letters[1:2], times = c(30, 70))
+# mat_list = list(a = mat[sectors == "a", ],
+#                 b = mat[sectors == "b", ])
+# dend_list = list(a = as.dendrogram(hclust(dist(mat_list[["a"]]))),
+#                  b = as.dendrogram(hclust(dist(mat_list[["b"]]))))
+
+
+pdf(paste0(fig_dir, 'test_module_hierarchy_circlize_heat3.pdf'), width=9, height=9)
+
+circos.par(cell.padding = c(0, 0, 0, 0), gap.degree = 5)
+# circos.initialize(sectors, xlim = cbind(c(0, 0), table(sectors)))
+circos.initialize("a", xlim=c(0,n))
+
+# make labels
+circos.track(ylim = c(0, 1), bg.border = NA, track.height = 0.2, 
+    panel.fun = function(x, y) {
+        for(i in seq_len(n)) {
+            circos.text(i-0.5, 0, labels[i], adj = c(0, 0.5), 
+                facing = "clockwise", niceFacing = TRUE,
+                col = 'black', cex = 0.75)
+        }
+})
+
+# make heatmap1
+circos.track(ylim = c(0, 3), bg.border = NA, track.height=0.1, panel.fun = function(x, y) {
+    sector.index = CELL_META$sector.index
+    m = mat
+    dend = dend
+
+    m2 = m[order.dendrogram(dend), ]
+    col_mat = col_fun(m2)
+    nr = nrow(m2)
+    nc = ncol(m2)
+    cn = colnames(m)
+    for(i in 1:nc) {
+        circos.rect(1:nr - 1, rep(nc - i, nr), 
+            1:nr, rep(nc - i + 1, nr), 
+            border = col_mat[, i], col = col_mat[, i])
+    }
+    circos.text(rep(CELL_META$cell.xlim[2], n) + convert_x(1, "mm"), 
+            1:n - 0.5, cn, 
+            cex = 0.5, adj = c(0, 0.5), facing = "inside")
+})
+
+# make dendrogram
+max_height = dend_height
+circos.track(ylim = c(0, max_height), bg.border = NA, track.height = 0.2, 
+    panel.fun = function(x, y) {
+        sector.index = get.cell.meta.data("sector.index")
+        dend = dend
+        circos.dendrogram(dend, max_height = max_height)
+})
+circos.clear()
+
+dev.off()
+
+
+
+
+
+
+# making this smaller for the paper revision
+pdf(paste0(fig_dir, 'test_module_hierarchy_circlize_heat3_today.pdf'), width=12, height=12)
+
+circos.par(cell.padding = c(0, 0, 0, 0), gap.degree = 5)
+# circos.initialize(sectors, xlim = cbind(c(0, 0), table(sectors)))
+circos.initialize("a", xlim=c(0,n))
+
+# make labels
+circos.track(ylim = c(0, 2), bg.border = NA, track.height = 0.45, 
+    panel.fun = function(x, y) {
+        for(i in seq_len(n)) {
+            circos.text(i-0.5, 0, labels[i], adj = c(0, 0.5), 
+                facing = "clockwise", niceFacing = TRUE,
+                col = 'black', cex = 0.8)
+        }
+})
+
+# make heatmap1
+circos.track(ylim = c(0, 3), bg.border = NA, track.height=0.07, panel.fun = function(x, y) {
+    sector.index = CELL_META$sector.index
+    m = mat
+    dend = dend
+
+    m2 = m[order.dendrogram(dend), ]
+    col_mat = col_fun(m2)
+    nr = nrow(m2)
+    nc = ncol(m2)
+    cn = colnames(m)
+    for(i in 1:nc) {
+        circos.rect(1:nr - 1, rep(nc - i, nr), 
+            1:nr, rep(nc - i + 1, nr), 
+            border = col_mat[, i], col = col_mat[, i])
+    }
+    circos.text(rep(CELL_META$cell.xlim[2], n) + convert_x(1, "mm"), 
+            1:n - 0.5, cn, 
+            cex = 0.5, adj = c(0, 0.5), facing = "inside")
+})
+
+# make dendrogram
+max_height = dend_height
+circos.track(ylim = c(0, max_height), bg.border = NA, track.height = 0.1, 
+    panel.fun = function(x, y) {
+        sector.index = get.cell.meta.data("sector.index")
+        dend = dend
+        circos.dendrogram(dend, max_height = max_height)
+})
+circos.clear()
+
+dev.off()
+
+
+#####################################################################3
+# make the circlize dendro with DME heamtap + MT cor heatmap
+#####################################################################
+
+# # DMEs
+# DMEs <- read.csv(file=paste0(data_dir, 'differential_MEs_humanST.csv'))
+
+# # set up DME data for circular dendro plotting:
+# tmp <- subset(DMEs, annotation == wgcna) %>% 
+#     dplyr::select(c(module, ident.1, avg_log2FC)) %>%
+#     pivot_wider(names_from = ident.1, values_from = avg_log2FC) %>% 
+#     as.data.frame()
+
+# rownames(tmp) <- tmp$module
+# tmp <- tmp[,2:ncol(tmp)]
+
+# mat <- as.matrix(tmp)[labels(dend),]
+
+# # clip values
+# min_val <- -1 
+# max_val <- 1
+
+# mat[mat > max_val] <- max_val
+# mat[mat < min_val] <- min_val
+# col_fun = colorRamp2(c(min_val, 0, max_val), c("purple", "black", "yellow"))
+
+
+
+# # mt cor 
+# tmp <- read.csv(file=paste0(data_dir, 'mtcor_humanST.csv'))
+
+# traits <-  c('Age', 'Sex', 'Amyloglo_Score_log_Gi', 'OC_Score_log_Gi')
+
+# tmp <- tmp %>% 
+#     subset(group == wgcna) %>% 
+#     subset(trait %in% traits) %>%
+#     mutate(trait = factor(as.character(trait), levels=traits)) %>% 
+#     dplyr::select(c(module, trait, cor)) %>%
+#     pivot_wider(names_from = trait, values_from = cor) %>% 
+#     as.data.frame()
+
+
+# rownames(tmp) <- tmp$module
+# tmp <- tmp[,2:ncol(tmp)]
+
+
+# mat2 <- as.matrix(tmp)[labels(dend),]
+
+# # clip values
+# min_val <- -0.2
+# max_val <- 0.2
+
+# mat2[mat2 > max_val] <- max_val
+# mat2[mat2 < min_val] <- min_val
+
+
+
+# col_fun2 = colorRamp2(c(min_val, 0, max_val), c("orange", "white", "blue"))
+
+
+
+# pdf(paste0(fig_dir, 'test_module_hierarchy_circlize_heat4.pdf'), width=12, height=12)
+
+# circos.par(cell.padding = c(0, 0, 0, 0), gap.degree = 5)
+# # circos.initialize(sectors, xlim = cbind(c(0, 0), table(sectors)))
+# circos.initialize("a", xlim=c(0,n))
+
+# # make labels
+# circos.track(ylim = c(0, 1), bg.border = NA, track.height = 0.2, 
+#     panel.fun = function(x, y) {
+#         for(i in seq_len(n)) {
+#             circos.text(i-0.5, 0, labels[i], adj = c(0, 0.5), 
+#                 facing = "clockwise", niceFacing = TRUE,
+#                 col = 'black', cex = 0.5)
+#         }
+# })
+
+# # make heatmap1
+# circos.track(ylim = c(0, ncol(mat)), bg.border = NA, track.height=0.1, panel.fun = function(x, y) {
+#     sector.index = CELL_META$sector.index
+#     m = mat
+#     dend = dend
+
+#     m2 = m[order.dendrogram(dend), ]
+#     col_mat = col_fun(m2)
+#     nr = nrow(m2)
+#     nc = ncol(m2)
+#     cn = colnames(m)
+#     for(i in 1:nc) {
+#         circos.rect(1:nr - 1, rep(nc - i, nr), 
+#             1:nr, rep(nc - i + 1, nr), 
+#             border = col_mat[, i], col = col_mat[, i])
+#     }
+#     circos.text(rep(CELL_META$cell.xlim[2], n) + convert_x(1, "mm"), 
+#             1:n - 0.5, cn, 
+#             cex = 0.5, adj = c(0, 0.5), facing = "inside")
+# })
+
+# # # make heatmap2
+# circos.track(ylim = c(0, ncol(mat2)), bg.border = NA, track.height=0.1, panel.fun = function(x, y) {
+#     sector.index = CELL_META$sector.index
+#     m = mat2
+#     dend = dend
+
+#     m2 = m[order.dendrogram(dend), ]
+#     col_mat = col_fun2(m2)
+#     nr = nrow(m2)
+#     nc = ncol(m2)
+#     cn = colnames(m)
+#     for(i in 1:nc) {
+#         circos.rect(1:nr - 1, rep(nc - i, nr), 
+#             1:nr, rep(nc - i + 1, nr), 
+#             border = col_mat[, i], col = col_mat[, i])
+#     }
+#     circos.text(rep(CELL_META$cell.xlim[2], n) + convert_x(1, "mm"), 
+#         1:n - 0.5, cn, 
+#         cex = 0.5, adj = c(0, 0.5), facing = "inside")
+# })
+
+# # make dendrogram
+# max_height = dend_height
+# circos.track(ylim = c(0, max_height), bg.border = NA, track.height = 0.3, 
+#     panel.fun = function(x, y) {
+#         sector.index = get.cell.meta.data("sector.index")
+#         dend = dend
+#         circos.dendrogram(dend, max_height = max_height)
+# })
+# circos.clear()
+
+# dev.off()
+
+```
+
+Module FeaturePlots for the single-cell dataset:
+```{r eval=FALSE}
+
+head(GetModules(seurat_obj, 'consensus'))
+
+
+MEs <- GetMEs(seurat_obj)
+meta <- seurat_obj@meta.data
+seurat_obj@meta.data <- cbind(meta, MEs)
+mods <- colnames(MEs)
+
+
+
+
+
+p <- FeatureEmbedding(
+  seurat_obj,
+  features=mods,
+  same_range=FALSE,
+  ncol=4,
+  plot_max='q99',
+  plot_min=0,
+  dpi=200,
+  point_size=1,
+  dpi_scale=0.5,
+  order_points=TRUE,
+  colfunc=viridis::magma,
+  combine=FALSE
+)
+class(p)
+
+seurat_obj@meta.data <- seurat_obj@meta.data[,!(colnames(seurat_obj@meta.data) %in% colnames(MEs))]
+
+
+
+pdf(paste0(fig_dir, 'projected_MEs_featureplot.pdf'), width=6, height=21)
+wrap_plots(p, ncol=2)
+dev.off()
+
+
+plot_list <- ModuleFeaturePlot(
+    seurat_obj, 
+    order=TRUE, 
+    raster=TRUE, 
+    restrict_range=FALSE, 
+    raster_dpi=200, 
+    raster_scale=0.5, 
+    point_size=1
+)
+
+pdf(paste0(fig_dir, 'projected_MEs_featureplot.pdf'), width=6, height=21)
+wrap_plots(plot_list, ncol=2)
+dev.off()
+
+# plot the clustering
+sc_color_df <- read.csv(file=paste0('/dfs7/swaruplab/smorabit/analysis/ADDS_2021/splitseq/integration/data/cell_identity.csv'))
+
+celltype_colors <- c(
+   'EX' = sc_color_df %>% subset(group == 'EX L5') %>% .$colour,
+   'INH' = sc_color_df %>% subset(group == 'INH VIP+') %>% .$colour,
+   'ASC' = sc_color_df %>% subset(group == 'ASC2') %>% .$colour,
+    'MG' = sc_color_df %>% subset(group == 'MG2') %>% .$colour,
+    'ODC' = sc_color_df %>% subset(group == 'ODC3') %>% .$colour,
+    'OPC' = sc_color_df %>% subset(group == 'OPC3') %>% .$colour,
+    'END' = sc_color_df %>% subset(group == 'END Arterial') %>% .$colour,
+    'PER' = sc_color_df %>% subset(group == 'T-Pericyte') %>% .$colour,
+    'SMC' = sc_color_df %>% subset(group == 'SMC') %>% .$colour,
+    'FBR' = sc_color_df %>% subset(group == 'Meningeal Fibroblast') %>% .$colour
+)
+cp_df <- data.frame(
+    colour = as.character(celltype_colors),
+    group = names(celltype_colors)
+)
+
+
+p <- PlotEmbedding(
+  seurat_obj,
+  group.by = 'cell_type',
+  raster_dpi = 400,
+  point_size=0.5,
+  raster_scale = 0.5,
+  plot_theme = umap_theme(),
+  plot_under=TRUE,
+  color_df = cp_df
+)
+
+pdf(paste0(fig_dir, 'umap_singlecell_celltypes.pdf'), width=6, height=6)
+p
+dev.off()
+
+
+```
+
+Plot MEs in snRNA-seq dataset in the spatial coordinates 
+
+```{r eval=FALSE}
+
+# load celltrek output coordinates:
+anno_df <- read.csv(file='/dfs7/swaruplab/smorabit/analysis/ADDS_2021/splitseq/integration/spatial_mapping/celltrek_coords_combined.csv')
+
+# add a clear coarse-grain celltype grouping:
+seurat_obj$coarse_groups <- ifelse(
+  seurat_obj$cell_type %in% c('FBR', 'PER', 'END', 'SMC'), 'VASC', seurat_obj$cell_type
+)
+seurat_obj$coarse_groups <- factor(
+  as.character(seurat_obj$coarse_groups, levels=c('EX', 'INH', 'ODC', 'OPC', 'MG', 'ASC', 'VASC'))
+)
+
+
+
+# add MEs to seurat object
+modules <- GetModules(seurat_obj)
+MEs <- GetMEs(seurat_obj)
+meta <- seurat_obj@meta.data
+seurat_obj@meta.data <- cbind(meta, MEs)
+mods <- colnames(MEs)
+
+# select sample
+cur_vis_sample <- 'Dec_13_2021_Human8'
+cur_vis_sample <- 'Dec_13_2021_Human5'
+
+# is this sample cntrl or AD/DS?
+cur_vis_sample_dx <- subset(seurat_human@meta.data, Sample == cur_vis_sample) %>% .$Diagnosis %>% unique %>% as.character
+if(cur_vis_sample_dx == 'AD_DS'){
+  cur_vis_sample_dx <- 'DSAD'
+}
+
+# get ST coords for this sample, and split seurat object by cell-type
+cur_coords <- subset(anno_df, vis_sample == cur_vis_sample)
+cur_seurat <- seurat_obj[,seurat_obj$bc %in% cur_coords$sc_bc]
+cur_seurat <- subset(cur_seurat, Diagnosis == cur_vis_sample_dx)
+
+rownames(cur_coords) <- cur_coords$sc_bc
+cur_coords <- cur_coords[as.character(cur_seurat$bc),]
+reduc <- as.matrix(cur_coords[,c('celltrek_1', 'celltrek_2')])
+rownames(reduc) <- colnames(cur_seurat)
+
+cur_seurat@reductions$spatial <- CreateDimReducObject(
+  embeddings = reduc
+)
+
+for(cur_mod in mods){
+  cur_color <- modules %>% subset(module == cur_mod) %>% .$color %>% unique
+
+  p <- FeatureEmbedding(
+      cur_seurat,
+      features = cur_mod,
+      facet_by = 'coarse_groups',
+      reduction = 'spatial',
+      point_size=0.5,
+      plot_min = 0,
+      plot_max = 'q99',
+      colfunc=colorRampPalette(c('grey90', cur_color), bias=2),
+      rev_colors=FALSE,
+      dpi=400
+    ) 
+
+
+  pdf(paste0(fig_dir, 'snRNA_spatial_featureplots/', cur_mod, '_', cur_vis_sample, '_Featureplot.pdf'), width=8, height=4)
+  print(p)
+  dev.off()
+}
+
+
+
+seurat_obj@meta.data <- seurat_obj@meta.data[,!(colnames(seurat_obj@meta.data) %in% colnames(MEs))]
+
+
+```
+
+
+Human ST spatial featureplots 
+
+```{r eval=FALSE}
+
+MEs <- GetMEs(seurat_human)
+meta <- seurat_human@meta.data
+seurat_human@meta.data <- cbind(meta, MEs)
+mods <- colnames(MEs)
+mods <- paste0('M', 1:ncol(MEs))
+
+# representative samples
+human_rep_samples <- c(
+  'Dec_13_2021_Human5', 'Dec_20_2021_Human1',
+  'Dec_13_2021_Human6', 'Oct_2021_6',
+  'Dec_13_2021_Human3', 'Dec_13_2021_Human7',
+  'Nov_24_2021_VisiumHuman_12', 'Dec_13_2021_Human8'
+)
+
+
+plot_list <- list()
+for(cur_mod in mods){
+  print(cur_mod)
+  cur_color <- modules %>% subset(module == cur_mod) %>% .$color %>% unique
+
+  p <- SampleFeaturePlot(
+    seurat_human,
+    feature=cur_mod,
+    sample_labels = c("Sex", 'Diagnosis'),
+    sample_col = "Sample",
+    samples_to_plot = human_rep_samples,
+    ncol = 8,
+    raster=TRUE,
+    plot_max = 'q99',
+    plot_min = 0,
+    #colfunc = inferno,
+    #rev_colors=TRUE,
+    colfunc=colorRampPalette(c('grey90', cur_color), bias=2),
+    rev_colors=FALSE,
+    dpi=600,
+    combine=FALSE
+  )
+
+  p <- lapply(p, function(x){
+    x <- x + theme(
+      plot.title = element_text(face='bold', size=20, vjust=-1),
+      plot.margin = margin(0,0,0,0)
+      # plot.margin = margin(-1,-1,-1,-1)
+    )
+    if(cur_mod != mods[1]){
+      x <- x + theme(
+        plot.title=element_blank()
+      )
+    }
+    x
+  })
+
+  p[[1]] <- p[[1]] + ylab(cur_mod) + theme(
+    axis.title.y = element_text(face='bold', size=20, color = cur_color)
+  )
+
+  plot_list <- c(plot_list, p)
+
+}
+
+seurat_human@meta.data <- seurat_human@meta.data[,!(colnames(seurat_human@meta.data) %in% colnames(MEs))]
+
+
+patch <- wrap_plots(plot_list, ncol=8, widths=1, heights=1) + plot_layout(guides='collect')
+
+pdf(paste0(fig_dir, 'test_human_metamodule_ST_Featureplot.pdf'), width=14, height=18)
+#  print(p)
+print(patch)
+dev.off()
+
+```
+
+
+Project the meta-modules into the mouse ST dataset 
+
+```{r eval=FALSE}
+
+# load the 5x dataset
+seurat_5x <- readRDS(file="~/swaruplab/smorabit/analysis/ADDS_2021/visium/5xFAD/hdWGCNA/data/5xFAD_seurat_hdWGCNA.rds")
+seurat_5x$annotation <- droplevels(seurat_5x$annotation)
+
+# subset to just contain the cortex + WM
+seurat_5x <- subset(seurat_5x, annotation %in% c('ctx-deep-layers', 'ctx-upper-layers', 'WM1', 'WM2'))
+
+
+# load mouse <-> human gene name table:
+hg38_mm10_genes <- read.table(
+  "/dfs7/swaruplab/smorabit/resources/hg38_mm10_orthologs_2021.txt",
+  sep='\t',
+  header=TRUE
+)
+colnames(hg38_mm10_genes) <-c('hg38_id', 'mm10_id', 'mm10_name', 'hg38_name')
+hg38_mm10_genes <- dplyr::select(hg38_mm10_genes, c(hg38_name, mm10_name, hg38_id, mm10_id))
+
+hg38_mm10_genes <- subset(hg38_mm10_genes, mm10_name != '' & hg38_name != '')
+
+# need to make sure that there's only one entry for each gene in hg38_mm10_genes
+mm10_genes <- unique(hg38_mm10_genes$mm10_name)
+hg38_genes <- unique(hg38_mm10_genes$hg38_name)
+hg38_mm10_genes <- hg38_mm10_genes[match(mm10_genes, hg38_mm10_genes$mm10_name),]
+
+
+seurat_5x <- ProjectModules(
+  seurat_5x,
+  seurat_ref = seurat_human,
+  gene_mapping=hg38_mm10_genes,
+  genome1_col="hg38_name", # genome of reference data
+  genome2_col="mm10_name", # genome of query data
+  group.by.vars="seqbatch",
+  wgcna_name_proj="consensus_projected",
+  wgcna_name = "consensus",
+  verbose=FALSE
+)
+
+
+
+
+################################################################################
+# ME violin plots:
+################################################################################
+
+
+library(ggpubr)
+
+MEs <- GetMEs(seurat_5x)
+modules <- GetModules(seurat_5x)
+mods <- levels(modules$module)
+mods <- mods[mods!='grey']
+MEs <- MEs[,mods]
+
+meta <- seurat_5x@meta.data
+seurat_5x@meta.data <- cbind(meta, MEs)
+
+
+cp_5x <- c("4 months" = "#E8C0FC", "6 months" = "#B57DD1",
+        "8 months"= "#8C64A1", "12 months" = "#643D78")
+
+cp_WT <- c("4 months" = "#BDFFDC", "6 months" = "#84DBB5",
+          "8 months"= "#45BA7C", "12 months" = "#14703F")
+
+
+color_df <- data.frame(
+  colour = as.character(mouse_cp),
+  group = names(mouse_cp)
+) %>% subset(group != 'unknown')
+
+p1 <- custom_vln(
+    subset(seurat_5x, Condition == '5X'),
+    features = mods,
+    group.by = 'annotation',
+    add_boxplot=FALSE,
+    split.by = 'Age',
+    split_colors= as.character(cp_5x),
+    add_colorbar=TRUE,
+    plot_ymin = NA,
+    comparisons=NA,
+    group_color_df = color_df
+  )
+  
+
+
+p2 <- custom_vln(
+    subset(seurat_5x, Condition == 'WT'),
+    features = mods,
+    group.by = 'annotation',
+    add_boxplot=FALSE,
+    split.by = 'Age',
+    split_colors= as.character(cp_WT),
+    add_colorbar=TRUE,
+    plot_ymin = NA,
+    comparisons=NA,
+    group_color_df = color_df
+  )
+
+pdf(paste0(fig_dir, 'projected_ME_vln_stack_5x.pdf'), width=7, height=7)
+p1 | p2 + plot_layout(guides='collect')
+dev.off()
+
+
+seurat_5x@meta.data <- meta
+
+
+################################################################################
+# selected ME violin plots:
+################################################################################
+
+
+library(ggpubr)
+
+MEs <- GetMEs(seurat_5x)
+modules <- GetModules(seurat_5x)
+mods <- levels(modules$module)
+mods <- mods[mods!='grey']
+MEs <- MEs[,mods]
+
+meta <- seurat_5x@meta.data
+seurat_5x@meta.data <- cbind(meta, MEs)
+
+
+cp_5x <- c("4 months" = "#E8C0FC", "6 months" = "#B57DD1",
+        "8 months"= "#8C64A1", "12 months" = "#643D78")
+
+cp_WT <- c("4 months" = "#BDFFDC", "6 months" = "#84DBB5",
+          "8 months"= "#45BA7C", "12 months" = "#14703F")
+
+
+color_df <- data.frame(
+  colour = as.character(mouse_cp),
+  group = names(mouse_cp)
+) %>% subset(group != 'unknown')
+
+select_mods <- c('M1', 'M6', 'M11')
+
+p1 <- custom_vln(
+    subset(seurat_5x, Condition == '5X'),
+    features = select_mods,
+    group.by = 'annotation',
+    add_boxplot=FALSE,
+    split.by = 'Age',
+    split_colors= as.character(cp_5x),
+    add_colorbar=TRUE,
+    plot_ymin = NA,
+    comparisons=NA,
+    group_color_df = color_df
+  )
+
+
+p2 <- custom_vln(
+    subset(seurat_5x, Condition == 'WT'),
+    features = select_mods,
+    group.by = 'annotation',
+    add_boxplot=FALSE,
+    split.by = 'Age',
+    split_colors= as.character(cp_WT),
+    add_colorbar=TRUE,
+    plot_ymin = NA,
+    comparisons=NA,
+    group_color_df = color_df
+  )
+
+pdf(paste0(fig_dir, 'projected_ME_vln_stack_5x_selected.pdf'), width=8, height=3)
+p1 | p2 + plot_layout(guides='collect')
+dev.off()
+
+seurat_5x@meta.data <- meta
+
+
+################################################################################
+# ME featureplot
+################################################################################
+
+
+
+#############################################
+# plot the MEs just for representative samples
+##############################################
+
+
+# representative samples ordered by age
+rep_samples_5x <- c('675', '421', '784', '314')
+rep_samples_WT <- c('242', '721', '343', '313')
+rep_samples <- c(rep_samples_5x, rep_samples_WT)
+
+
+MEs <- GetMEs(seurat_5x)
+modules <- GetModules(seurat_5x)
+mods <- levels(modules$module)
+mods <- mods[mods!='grey']
+MEs <- MEs[,mods]
+
+meta <- seurat_5x@meta.data
+seurat_5x@meta.data <- cbind(meta, MEs)
+
+plot_list <- list()
+for(cur_mod in mods){
+  print(cur_mod)
+  cur_color <- modules %>% subset(module == cur_mod) %>% .$color %>% unique
+
+  p <- SampleFeaturePlot(
+    seurat_5x,
+    feature=cur_mod,
+    sample_labels = c("Condition", 'Age'),
+    sample_col = "SAMPLE",
+    samples_to_plot = rep_samples,
+    ncol = 10,
+    raster=TRUE,
+    plot_max = 'q99',
+    plot_min = 0,
+    #colfunc = inferno,
+    #rev_colors=TRUE,
+    colfunc=colorRampPalette(c('grey90', cur_color), bias=2),
+    rev_colors=FALSE,
+    dpi=600,
+    combine=FALSE
+  )
+
+  p <- lapply(p, function(x){
+    x <- x + theme(
+      plot.title = element_text(face='bold', size=20, vjust=-1),
+      plot.margin = margin(0,0,0,0)
+      # plot.margin = margin(-1,-1,-1,-1)
+    )
+    if(cur_mod != mods[1]){
+      x <- x + theme(
+        plot.title=element_blank()
+      )
+    }
+    x
+  })
+
+  p[[1]] <- p[[1]] + ylab(cur_mod) + theme(
+    axis.title.y = element_text(face='bold', size=20, color = cur_color)
+  )
+
+  plot_list <- c(plot_list, p)
+
+}
+
+patch <- wrap_plots(plot_list, ncol=8, widths=1, heights=1) + plot_layout(guides='collect')
+
+pdf(paste0(fig_dir, 'projected_ME_featureplots_representative.pdf'), width=14, height=18)
+#  print(p)
+print(patch)
+dev.off()
+
+seurat_5x@meta.data <- meta
+
+#################################################################################
+# MT correlation
+################################################################################
+
+# selected traits for MT correlation:
+seurat_5x$Sex <- factor(as.character(seurat_5x$Sex), levels=c('M', 'F'))
+traits <- c('Age', 'Sex', 'DAA_UCell', 'DAM_UCell', 'DOL_UCell', 'PIGs_UCell')
+
+seurat_5x$annotation <- droplevels(seurat_5x$annotation)
+
+seurat_5x <- ModuleTraitCorrelation(
+  seurat_5x,
+  traits = traits,
+  group.by = 'annotation',
+  subset_by = 'Condition',
+  subset_groups = '5X'
+)
+
+p <- PlotModuleTraitCorrelation(
+  seurat_5x,
+  label = 'fdr',
+  label_symbol = 'stars',
+  text_size = 2,
+  text_digits = 2,
+  #trait_text_size = 5,
+  text_color = 'black',
+  high_color = 'red',
+  mid_color = 'white',
+  low_color = 'blue',
+  plot_max = 0.5,
+  #group_order = levels(seurat_5x$annotation),
+  combine=TRUE
+)
+
+pdf(paste0(fig_dir, 'MT_correlation_5x.pdf'), width=5, height=10)
+p
+dev.off()
+
+
+
+# correlation in WT mice:
+seurat_5x <- ModuleTraitCorrelation(
+  seurat_5x,
+  traits = traits,
+  group.by = 'annotation',
+  subset_by = 'Condition',
+  subset_groups = 'WT'
+)
+
+p <- PlotModuleTraitCorrelation(
+  seurat_5x,
+  label = 'fdr',
+  label_symbol = 'stars',
+  text_size = 2,
+  text_digits = 2,
+  #trait_text_size = 5,
+  text_color = 'black',
+  high_color = 'darkorchid3',
+  mid_color = 'white',
+  low_color = 'seagreen',
+  plot_max = 0.5,
+  #group_order = levels(seurat_5x$annotation),
+  combine=TRUE
+)
+
+pdf(paste0(fig_dir, 'MT_correlation_WT.pdf'), width=5, height=10)
+p
+dev.off()
+
+################################################################################
+# Module Preservation
+################################################################################
+
+
+# need to add a grey module 
+modules <- GetModules(seurat_human, 'consensus')
+modules_orig <- GetModules(seurat_human, 'consensus')
+
+# add a grey module using genes that were not included for clustering:
+wgcna_genes <- GetWGCNAGenes(seurat_human, 'consensus')
+not_wgcna_genes <- rownames(seurat_human)[!(rownames(seurat_human) %in% wgcna_genes)]
+grey_genes <- sample(not_wgcna_genes, 1000)
+grey_genes_mouse <- subset(hg38_mm10_genes, hg38_name %in% grey_genes) %>% .$mm10_name
+grey_genes_mouse <- grey_genes_mouse[grey_genes_mouse %in% rownames(seurat_5x)]
+grey_mod <- data.frame(
+  gene_name = grey_genes,
+  module = 'grey',
+  color = 'grey'
+)
+grey_mod[,colnames(modules[4:ncol(modules)])] <- 0
+modules <- rbind(modules, grey_mod)
+seurat_human <- SetModules(seurat_human, modules, 'consensus') 
+
+
+# 
+
+
+genes_use <- subset(hg38_mm10_genes, mm10_name %in% c(GetWGCNAGenes(seurat_5x), grey_genes_mouse)) %>% .$hg38_name %>% unique
+groups <- c('L1', 'L2-3', 'L3-4', 'L3-4-5', 'L5-6', 'L6b', 'WM')
+
+datExpr <- hdWGCNA:::to_pseudobulk(
+    seurat_human,
+    replicate_col = 'Sample',
+    cell_type_col = 'annotation',
+    label_col = 'Diagnosis'
+)
+datExpr <- Reduce(cbind, lapply(names(datExpr), function(x){
+    cur <- datExpr[[x]]
+    colnames(cur) <- paste0(x, '_', colnames(cur))
+    cur
+}))
+
+datExpr <- t(datExpr[genes_use,])
+
+# compute CPM:
+cpm <- t(apply(datExpr, 1, function(x){
+    y <- (x) / sum(x) * 1000000
+    log2(y + 1)
+}))
+cpm_human <- cpm
+
+
+# mouse pseudobulk
+genes_use <- c(GetWGCNAGenes(seurat_5x), grey_genes_mouse) %>% unique
+datExpr <- hdWGCNA:::to_pseudobulk(
+    seurat_5x,
+    replicate_col = 'SAMPLE',
+    cell_type_col = 'annotation',
+    label_col = 'Condition'
+)
+datExpr <- Reduce(cbind, lapply(names(datExpr), function(x){
+    cur <- datExpr[[x]]
+    colnames(cur) <- paste0(x, '_', colnames(cur))
+    cur
+}))
+
+datExpr <- t(datExpr[genes_use,])
+
+# compute CPM:
+cpm <- t(apply(datExpr, 1, function(x){
+    y <- (x) / sum(x) * 1000000
+    log2(y + 1)
+}))
+cpm_mouse <- cpm
+
+
+# check samples / genes 
+check_mouse <- WGCNA::goodSamplesGenes(cpm_mouse)
+check_human <- WGCNA::goodSamplesGenes(cpm_human)
+genes_use <- intersect(
+  colnames(cpm_mouse)[check_mouse$goodGenes], 
+  subset(hg38_mm10_genes, hg38_name %in% colnames(cpm_human)[check_human$goodGenes]) %>% .$mm10_name
+)
+genes_use_human <-   subset(hg38_mm10_genes, mm10_name %in% genes_use) %>% .$hg38_name
+
+modules <- modules[genes_use_human,]
+seurat_human <- SetModules(seurat_human, modules, 'consensus') 
+
+cpm_human <- cpm_human[,genes_use_human]
+cpm_mouse <- cpm_mouse[,genes_use]
+seurat_human@misc[['consensus']]$datExpr <- cpm_human
+seurat_5x@misc[['consensus_projected']]$datExpr <- cpm_mouse
+
+
+# run module preservation function
+seurat_5x <- ModulePreservation(
+  seurat_5x,
+  seurat_ref = seurat_human,
+  name="consensus_projected",
+  wgcna_name = 'consensus_projected',
+  wgcna_name_ref = 'consensus',
+  verbose=3,
+  gene_mapping=hg38_mm10_genes,
+  genome1_col="hg38_name", # genome of reference data
+  genome2_col="mm10_name", # genome of query data
+  n_permutations=100
+)
+
+saveRDS(seurat_5x, file=paste0(data_dir, "5xFAD_seurat_hdWGCNA_projected.rds"))
+seurat_5x <- readRDS(file=paste0(data_dir, "5xFAD_seurat_hdWGCNA_projected.rds"))
+
+# getthe module preservation table
+mod_pres <- GetModulePreservation(seurat_5x, "consensus_projected")$Z
+obs_df <- GetModulePreservation(seurat_5x, "consensus_projected")$obs
+
+
+plot_list <- PlotModulePreservation(
+  seurat_5x,
+  name="consensus_projected",
+  statistics = "summary"
+)
+
+
+pdf(paste0(fig_dir, 'module_preservation_5x.pdf'), width=10, height=5)
+wrap_plots(plot_list, ncol=2)
+dev.off()
+
+
+################################################################################
+# Plot as a lollipop
+################################################################################
+
+plot_df <- mod_pres[,c('moduleSize', 'Zsummary.pres')]
+plot_df$module <- rownames(plot_df)
+plot_df <- plot_df %>%subset(module != 'gold')
+plot_df <-plot_df %>% dplyr::arrange(Zsummary.pres, descending=TRUE)
+plot_df$module <- factor(as.character(plot_df$module), levels=as.character(plot_df$module))
+
+
+mod_colors <- dplyr::select(modules, c(module, color)) %>%
+  distinct
+mod_cp <- mod_colors$color; names(mod_cp) <- mod_colors$module
+
+p <- plot_df %>%
+  ggplot(aes(y=module, x=Zsummary.pres, size= moduleSize, color=module, fill=module)) + 
+  geom_vline(xintercept=2, linewidth=0.25) + 
+  geom_vline(xintercept=10, linewidth=0.25) +
+  #  geom_rect(
+  #         data = plot_df[1,],
+  #         aes(xmin=-Inf, ymax=Inf, ymin=-Inf, xmax=2), fill='grey75', alpha=0.8, color=NA) +
+  #   geom_rect(
+  #     data=plot_df[1,],
+  #     aes(ymin=-Inf, ymax=Inf, xmin=2, xmax=10), fill='grey92', alpha=0.8, color=NA) + 
+  geom_segment(aes(y=module, yend=module, x=0, xend=Zsummary.pres), size=0.5, alpha=0.5) +
+  geom_point(shape=21, color='black') +
+  scale_color_manual(values=mod_cp, guide='none') +
+  scale_fill_manual(values=mod_cp, guide='none') +
+  ylab('') + xlab("Z-summary preservation") +
+  # scale_x_continuous(breaks = c(0, 1, 2,3)) +
+ #labs(size='Size\nintersection') 
+
+  theme(
+    panel.border = element_rect(size=1, color='black', fill=NA),
+    axis.line.y = element_blank(),
+    axis.line.x = element_blank(),
+    plot.title = element_text(hjust=0.5, face='plain')
+  ) + RotatedAxis()
+
+#p <- p + ggforestplot::geom_stripes(aes(y=module), inherit.aes=FALSE, data=overlap_df) 
+
+pdf(paste0(fig_dir, 'module_preservation_lollipop.pdf'), width=4, height=5)
+p
+dev.off()
+
+
+pdf(paste0(fig_dir, 'module_preservation_lollipop_smaller.pdf'), width=3, height=4)
+p
+dev.off()
+
+
+
+###################################################################
+# preservation in a WT
+###################################################################
+
+modules_full <- modules
+cur_cpm <-cpm_mouse[grepl('WT', rownames(cpm_mouse)),]
+
+
+# check samples / genes 
+check_mouse <- WGCNA::goodSamplesGenes(cur_cpm)
+genes_use <- intersect(
+  colnames(cur_cpm)[check_mouse$goodGenes], 
+  subset(hg38_mm10_genes, hg38_name %in% colnames(cpm_human)[check_human$goodGenes]) %>% .$mm10_name
+)
+genes_use_human <-   subset(hg38_mm10_genes, mm10_name %in% genes_use) %>% .$hg38_name
+
+modules <- modules_full[genes_use_human,]
+seurat_human <- SetModules(seurat_human, modules, 'consensus') 
+
+cur_cpm_human <- cpm_human[,genes_use_human]
+cur_cpm_mouse <- cur_cpm[,genes_use]
+seurat_human@misc[['consensus']]$datExpr <- cur_cpm_human
+seurat_5x@misc[['consensus_projected']]$datExpr <- cur_cpm_mouse
+
+
+# run module preservation function
+seurat_5x <- ModulePreservation(
+  seurat_5x,
+  seurat_ref = seurat_human,
+  name="consensus_projected",
+  wgcna_name = 'consensus_projected',
+  wgcna_name_ref = 'consensus',
+  verbose=3,
+  gene_mapping=hg38_mm10_genes,
+  genome1_col="hg38_name", # genome of reference data
+  genome2_col="mm10_name", # genome of query data
+  n_permutations=100
+)
+
+
+# getthe module preservation table
+mod_pres_wt <- GetModulePreservation(seurat_5x, "consensus_projected")$Z
+obs_df_wt <- GetModulePreservation(seurat_5x, "consensus_projected")$obs
+
+
+plot_list <- PlotModulePreservation(
+  seurat_5x,
+  name="consensus_projected",
+  statistics = "summary"
+)
+
+
+pdf(paste0(fig_dir, 'module_preservation_wt.pdf'), width=10, height=5)
+wrap_plots(plot_list, ncol=2)
+dev.off()
+
+
+
+
+```
+
+
+Correlation of Mouse amyloid scores with the human hdWGCNA modules 
+
+```{r eval=FALSE}
+
+################################################################################
+# MT correlation
+################################################################################
+
+seurat_5x <- SetActiveWGCNA(seurat_5x, 'consensus_projected')
+
+# only plot samples that have amyloid scores:
+amyloid_samples <- seurat_5x@meta.data %>%
+  group_by(SAMPLE) %>%
+  summarise(Mean = mean(Amyloglo_Score_log)) %>%
+  dplyr::filter(Mean != 0) %>% .$SAMPLE %>% as.character
+
+seurat_5x$amyloid_sample <- seurat_5x$SAMPLE %in% amyloid_samples
+
+
+# correlation of amyloid scores:
+traits <- c('Amyloglo_Score_log', 'Amyloglo_Score_log_Gi', 'OC_Score_log', 'OC_Score_log_Gi')
+
+
+
+seurat_5x$annotation <- droplevels(seurat_5x$annotation)
+
+
+seurat_5x$Condition_Age <- paste0(
+    as.character(seurat_5x$Condition), '_',
+    as.character(seurat_5x$Age)
+)
+
+groups <- unique(seurat_5x$Condition_Age)
+plot_df <- data.frame()
+for(cur_group in groups){
+
+    print(cur_group)
+
+    seurat_5x <- ModuleTraitCorrelation(
+        seurat_5x,
+        traits = traits,
+        group.by = 'annotation',
+        subset_by = 'Condition_Age',
+        subset_groups = cur_group
+    )
+
+    mt_cor <- GetModuleTraitCorrelation(seurat_5x)
+    names(mt_cor)
+
+    cor_df <- do.call(rbind, lapply(names(mt_cor$cor), function(x){
+        cur_cor <- mt_cor$cor[[x]]
+        cur_fdr <- mt_cor$fdr[[x]]
+        cur_cor_df <- reshape2::melt(cur_cor)
+        cur_fdr_df <- reshape2::melt(cur_fdr)
+        cur_cor_df$fdr <- cur_fdr_df$value
+        cur_cor_df$group <- x
+        cur_cor_df
+    }))
+    cor_df %<>% dplyr::rename(c(trait = Var1, module = Var2, cor=value))
+
+    # add age and genotype info
+    tmp<- strsplit(cur_group, '_')[[1]]
+    cor_df$Condition <- tmp[1]
+    cor_df$Age <- tmp[2]
+
+    plot_df <- rbind(plot_df, cor_df)
+
+}
+
+write.csv(plot_df, file=paste0(data_dir, 'amyloid_module_correlation_5x_metamodules.csv'), quote=FALSE)
+
+
+
+
+plot_df <- read.csv(file=paste0(data_dir, 'amyloid_module_correlation_5x_metamodules.csv'))
+
+plot_df <- subset(plot_df, 
+  group != 'all_cells' & 
+  trait %in% c('Amyloglo_Score_log_Gi', 'OC_Score_log_Gi') &
+  !is.na(cor)
+)
+
+
+plot_df %>% subset(fdr < 0.05 & module == 'M11') %>% arrange(-cor) %>% head(25)
+plot_df %>% subset(fdr < 0.05) %>% arrange(-cor) %>% head(25)
+
+
+
+modules <- GetModules(seurat_5x)
+mod_levels <- levels(modules$module)
+
+plot_df$module <- factor(as.character(plot_df$module), levels=mod_levels)
+
+# grouping variables:
+plot_df$id <- paste(plot_df$group, plot_df$Condition, plot_df$Age, sep='_')
+
+# get wgcna info 
+data.features <- GetMEs(seurat_5x) %>% as.data.frame()
+data.features$id <- paste(seurat_5x$annotation, seurat_5x$Condition, seurat_5x$Age, sep='_')
+
+
+#---------------------------------------------------------------------
+# code from Seurat DotPlot
+#---------------------------------------------------------------------
+
+scale <- TRUE
+col.min <- -2.5
+col.max <- 2.5
+dot.min <- 0
+
+data.plot <- lapply(
+    X = unique(x = data.features$id),
+    FUN = function(ident) {
+      data.use <- data.features[data.features$id == ident, 1:(ncol(x = data.features) - 1), drop = FALSE]
+      avg.exp <- apply(
+        X = data.use,
+        MARGIN = 2,
+        FUN = function(x) {
+          return(mean(x = expm1(x = x)))
+        }
+      )
+      pct.exp <- apply(X = data.use, MARGIN = 2, FUN = PercentAbove, threshold = 0)
+      return(list(avg.exp = avg.exp, pct.exp = pct.exp))
+    }
+  )
+names(x = data.plot) <- unique(x = data.features$id)
+id.levels <- levels(seurat_obj$cell_type)
+data.plot <- lapply(
+    X = names(x = data.plot),
+    FUN = function(x) {
+      data.use <- as.data.frame(x = data.plot[[x]])
+      data.use$features.plot <- rownames(x = data.use)
+      data.use$id <- x
+      return(data.use)
+    }
+  )
+  data.plot <- do.call(what = 'rbind', args = data.plot)
+  if (!is.null(x = id.levels)) {
+    data.plot$id <- factor(x = data.plot$id, levels = id.levels)
+  }
+  ngroup <- length(x = levels(x = data.plot$id))
+
+  avg.exp.scaled <- sapply(
+    X = unique(x = data.plot$features.plot),
+    FUN = function(x) {
+      data.use <- data.plot[data.plot$features.plot == x, 'avg.exp']
+      if (scale) {
+        data.use <- scale(x = log1p(data.use))
+        data.use <- MinMax(data = data.use, min = col.min, max = col.max)
+      } else {
+        data.use <- log1p(x = data.use)
+      }
+      return(data.use)
+    }
+  )
+  avg.exp.scaled <- as.vector(x = t(x = avg.exp.scaled))
+  data.plot$avg.exp.scaled <- avg.exp.scaled
+  
+  data.plot$pct.exp[data.plot$pct.exp < dot.min] <- NA
+  data.plot$pct.exp <- data.plot$pct.exp * 100
+
+# match with the other table
+data.plot <- subset(data.plot, id %in% plot_df$id)
+
+# merge the DFs
+data.plot$ix <- paste0(data.plot$features.plot, '_', data.plot$id)
+plot_df$ix <- paste0(plot_df$module, '_', plot_df$id)
+
+ix <- match(plot_df$ix, data.plot$ix, )
+all.equal(plot_df$ix, data.plot$ix[ix])
+
+plot_df$avg.exp <- data.plot$avg.exp[ix]
+plot_df$avg.exp.scaled <- data.plot$avg.exp.scaled[ix]
+plot_df$pct.exp <- data.plot$pct.exp[ix]
+
+
+
+plot_df$Significance <- ifelse(plot_df$fdr > 0.05, 'x', NA)
+
+plot_range <- plot_df %>% .$cor %>% range
+size_range <- plot_df %>% .$pct.exp %>% range
+
+
+# loop through Studies & diagnosis
+ages <- c('12mo', '8mo', '6mo', '4mo')
+genotypes <- unique(as.character(seurat_5x$Condition))
+plot_list <- list()
+for(cur_age in ages){
+    for(cur_geno in genotypes){
+        
+
+    cur_df <- plot_df %>% subset(Condition == cur_geno & Age == cur_age)
+    if(nrow(cur_df) == 0){next}    
+
+        cur_df <- plot_df %>% subset(Condition == cur_geno & Age == cur_age)
+        p <-cur_df %>%
+            ggplot(aes(x = module, y = group, color=cor, size=pct.exp)) + 
+            geom_point() + 
+            scale_color_gradient2(high='red', mid='white', low='blue', limits=plot_range) + 
+            scale_size_continuous(limits=size_range) +
+            geom_text(aes(label=Significance), color='black', size=3) +
+            coord_equal() +
+            RotatedAxis() +
+            ylab(paste0(cur_age, ', ', cur_geno)) + 
+            theme(
+                axis.line.x = element_blank(),
+                axis.line.y = element_blank(),
+                panel.border = element_rect(linewidth=1, color='black', fill=NA),
+                axis.title.x = element_blank(),
+                axis.title.y = element_text(angle=0, vjust=0.5),
+                plot.title = element_text(hjust=0.5),
+                panel.grid = element_line(size=0.25, color='lightgrey'),
+                plot.margin = margin(c(0,0,0,0)),
+                
+            ) 
+
+        if(cur_age != '12mo'){
+            p <- p + theme(
+                axis.text.x = element_blank(),
+                axis.ticks.x = element_blank(),
+            )
+        }       
+
+     patch <- p + facet_wrap(~trait, ncol=2)
+
+     plot_list[[paste0(cur_age, ', ', cur_geno)]] <- patch
+    }
+}
+
+
+pdf(paste0(fig_dir, 'MT_cor_heatmap_consensus_visium_dotplot_amylo_5x.pdf'), width=12, height=6)
+ wrap_plots(rev(plot_list), ncol=1) + plot_layout(guides='collect')
+#wrap_plots(p)
+dev.off()
+
+
+```
+
+
+
+
+
+
+
+
+
+
+Below: have not run yet for the meta-modules
+
+
+
+
+
+
+
+Compute the module-module distances like we did for the ST data but using the SC MEs.
+
+```{r eval=FALSE}
+
+
+########################################################################################
+# Correlation of module eigengenes 
+########################################################################################
+
+# get the modules
+MEs <- GetMEs(seurat_obj)
+
+# correlate MEs in each of the brain regions
+groups <- levels(seurat_obj$cell_identity)
+mm_cor <- Reduce(rbind, lapply(groups, function(x){
+    cur_spots <- seurat_obj@meta.data %>% subset(cell_identity == x) %>% rownames
+    z <- qlcMatrix::corSparse(
+        X = as.matrix(MEs[cur_spots,]),
+        Y = as.matrix(MEs[cur_spots,])
+    ) 
+    colnames(z) <- colnames(MEs)
+    rownames(z) <- colnames(MEs)
+    z <-  reshape2::melt(z)
+    z$group <- x
+    z$pair <- paste0(z$Var1, '_', z$Var2)
+    z
+}))
+head(mm_cor)
+
+# take the component-wise maximum correlation across each of the regions
+test <- mm_cor %>% 
+    group_by(pair) %>% 
+    mutate(val = max(value)) %>% 
+    ungroup %>% 
+    select(c(Var1, Var2, val)) %>% 
+    distinct %>% 
+    spread(Var1, val) 
+test <- as.matrix(test[,-1])
+rownames(test) <- colnames(test)
+
+# re-order:
+test <- test[levels(modules$module), levels(modules$module)]
+E <- test
+
+# set up Jaccard matrix:
+J <- overlap_df %>% select(c(m1,m2,Jaccard)) %>% spread(m1,Jaccard)
+J <- as.matrix(J[,-1])
+rownames(J) <- colnames(J)
+J <- J[rownames(E), colnames(E)]
+
+
+# compute the dissimilarity matrix:
+D = 1 - ((E + (3*J))/4)
+D_sc <- D
+
+################################
+# Plot D_st vs D_sc
+################################
+
+plot_df <- reshape2::melt(D_sc)
+plot_df2 <- reshape2::melt(D_st)
+plot_df$val_st <- plot_df2$value
+
+p <- plot_df %>%
+    subset(Var1 != Var2) %>%
+     ggplot(aes(x=value, y=val_st)) +
+     geom_hex() +
+     scale_fill_viridis(trans='log', breaks=c(7,50,400)) +
+    # geom_point() + 
+     # geom_smooth(method='lm') + 
+     stat_cor() + 
+     xlab('snRNA-seq module dissimilarity') +
+     ylab('ST module dissimilarity') + 
+     labs(fill = 'log(Density)')  +
+     coord_equal() +
+    theme(
+        axis.line.y = element_blank(),
+        axis.line.x = element_blank(),
+        panel.border = element_rect(linewidth=1, fill=NA, color='black')
+    )
+
+
+
+pdf(paste0(fig_dir, 'sc_st_module_distances.pdf'), width=6, height=4)
+p
+dev.off()
+
+
+
+
+```
+
+ consensus network analysis? 
+
+```{r eval=FALSE}
+
+
+library(magrittr)
+
+genes_use <- GetWGCNAGenes(seurat_human)
+groups <- c('L1', 'L2-3', 'L3-4', 'L3-4-5', 'L5-6', 'L6b', 'WM')
+
+datExpr <- hdWGCNA:::to_pseudobulk(
+    seurat_human,
+    replicate_col = 'Sample',
+    cell_type_col = 'annotation',
+    label_col = 'Diagnosis'
+)
+datExpr <- Reduce(cbind, lapply(names(datExpr), function(x){
+    cur <- datExpr[[x]]
+    colnames(cur) <- paste0(x, '_', colnames(cur))
+    cur
+}))
+
+datExpr <- t(datExpr[GetWGCNAGenes(seurat_human),])
+
+# compute CPM:
+cpm <- t(apply(datExpr, 1, function(x){
+    y <- (x) / sum(x) * 1000000
+    log2(y + 1)
+}))
+
+datExpr_list <- lapply(groups, function(x){
+    cpm[grepl(x, rownames(cpm)),]
+})
+names(datExpr_list) <- groups
+
+gene_names <- GetWGCNAGenes(seurat_human)
+seurat_human <- SetupForWGCNA(
+    seurat_human,
+    features = gene_names,
+    wgcna_name = 'consensus'
+)
+
+
+multiExpr <- WGCNA::list2multiData(datExpr_list)
+
+genes_use <- WGCNA::goodGenesMS(multiExpr)
+gene_names <- gene_names[genes_use]
+
+# subset the multiExpr by the good genes::
+datExpr_list <- lapply(1:length(multiExpr), function(i){
+multiExpr[[i]]$data[,genes_use]
+})
+multiExpr <- WGCNA::list2multiData(datExpr_list)
+names(multiExpr) <- groups
+
+# update the WGCNA gene list:
+seurat_human <- SetWGCNAGenes(seurat_human, gene_names, 'consensus')
+
+# set the multiExpr in the Seurat object
+seurat_human@misc[['consensus']]$multiExpr <- multiExpr
+
+
+seurat_human <- TestSoftPowersConsensus(seurat_human)
+
+
+seurat_human <- ConstructNetwork(
+    seurat_human,
+    minModuleSize=50,
+    consensus=TRUE,
+    #detectCutHeight=0.995,
+    mergeCutHeight=0.3,
+    tom_name='consensus',
+    overwrite_tom=TRUE
+)
+
+length(unique(GetModules(seurat_human)$module))
+
+pdf(paste0(fig_dir, "pb_consensus_dendro_cut3.pdf"),height=3, width=6)
+print(PlotDendrogram(seurat_human, main='hdWGCNA Dendrogram'))
+dev.off()
+
+# run WGCNA separately for each group
+for(cur_group in groups){
+    print(cur_group)
+    wgcna_name <- cur_group
+    seurat_human <- SetupForWGCNA(
+        seurat_human,
+        features = genes_use,
+        wgcna_name = cur_group
+    )
+
+    # just take from one brain layer 
+    cur_cpm <- cpm[grepl(cur_group, rownames(cpm)),]
+    seurat_human@misc[[wgcna_name]]$datExpr <- cur_cpm
+
+    seurat_human <- TestSoftPowers(seurat_human)
+    plot_list <- PlotSoftPowers(seurat_human)
+
+    # assemble with patchwork
+    pdf(paste0(fig_dir, cur_group, '_softpower.pdf'), width=12, height=8)
+    print(wrap_plots(plot_list, ncol=2))
+    dev.off()
+
+    # construct wgcna network:
+    seurat_human <- ConstructNetwork(
+        seurat_human,
+        #PamStage = T,
+            minModuleSize=50,
+            #detectCutHeight=0.995,
+            mergeCutHeight=0.1,
+        tom_name=cur_group,
+        overwrite_tom=TRUE
+    )
+
+    # plot the dendrogram
+    pdf(paste0(fig_dir, cur_group, "_pb_dendro.pdf"),height=3, width=6)
+    print(PlotDendrogram(seurat_human, main='hdWGCNA Dendrogram'))
+    dev.off()
+
+    seurat_human <- ModuleEigengenes(
+        seurat_human,
+        group.by.vars="Sample",
+    )
+
+    seurat_human <- ModuleConnectivity(
+        seurat_human,
+        reassign_modules=FALSE
+    )
+
+}
+
+saveRDS(seurat_human, file=paste0(data_dir, "ADDS_seurat_processed_annotated_hdWGCNA_all.rds"))
+
+
+```
+
+
+
+For peer review response:
+
+Prioritize / sort the 166 co-expression modules and 15 meta-modules by their
+patterns 
+
+Direct quote:
+
+"Regarding the multi-scale co-expression analysis, there are so many modules differentially 
+regulated between AD and control. Is it possible to rank order these observations according to 
+their strength and or temporal observations? Can we maybe infer putative causality?"
+
+
+Maybe I could just do a bunch of different overlap / set operations to find the groups 
+that I am interested in ...?
+
+Pattern 1: Not DE in any group 
+Pattern 2: DE in one condition 
+Pattern 3: Opposite directions -- up in early but down in late etc
+
+```{r eval=FALSE}
+
+genes_use <- GetWGCNAGenes(seurat_human)
+
+all_mods <- Reduce(rbind, lapply(groups, function(x){
+
+    cur_mods <- GetModules(seurat_human, wgcna_name = x)[,1:3]
+    cur_mods <- cur_mods[genes_use,]
+    cur_mods$gene_name <- genes_use
+    cur_mods$module <- ifelse(is.na(cur_mods$module), 'grey' , as.character(cur_mods$module))
+    cur_mods$color <- ifelse(is.na(cur_mods$color), 'grey' , as.character(cur_mods$color))
+    
+    cur_mods <- cur_mods %>% 
+    dplyr::select(c(module, color)) %>% 
+    distinct()
+
+    
+    cur_mods 
+
+}))
+all_mods <- all_mods %>% subset(module != 'grey') %>% distinct
+mod_colors <- all_mods$color; names(mod_colors) <- all_mods$module
+
+
+
+# set a threshold for log2FC 
+logfc_thresh <- 0.25
+
+DMEs <- read.csv(file=paste0(data_dir, 'differential_MEs_humanST.csv')) %>% 
+    subset(wgcna == 'consensus')
+
+DMEs <- read.csv(file=paste0(data_dir, 'differential_MEs_humanST.csv'))
+DMEs <- DMEs %>% subset(annotation == wgcna ) 
+
+
+#-------------------------------------------------------------------------#
+# Which modules are not DE (below FC thresh) in any group
+#-------------------------------------------------------------------------#
+
+not_de <- subset(DMEs, p_val_adj > 0.05 | abs(avg_log2FC) < logfc_thresh) 
+not_de <- names(which(table(not_de$module) == 3)) 
+
+#-------------------------------------------------------------------------#
+# Get a list of modules that are significantly up / down in each condition
+#-------------------------------------------------------------------------#
+
+# early 
+up_eAD <- subset(DMEs, p_val_adj <= 0.05 & ident.1 == 'earlyAD' & avg_log2FC > logfc_thresh) %>% .$module
+down_eAD <- subset(DMEs, p_val_adj <= 0.05 & ident.1 == 'earlyAD' & avg_log2FC < -logfc_thresh) %>% .$module
+
+# AD
+up_AD <- subset(DMEs, p_val_adj <= 0.05 & ident.1 == 'AD' & avg_log2FC > logfc_thresh) %>% .$module
+down_AD <- subset(DMEs, p_val_adj <= 0.05 & ident.1 == 'AD' & avg_log2FC < -logfc_thresh) %>% .$module
+
+# AD/DS
+up_ADDS <- subset(DMEs, p_val_adj <= 0.05 & ident.1 == 'AD_DS' & avg_log2FC > logfc_thresh) %>% .$module
+down_ADDS <- subset(DMEs, p_val_adj <= 0.05 & ident.1 == 'AD_DS' & avg_log2FC < -logfc_thresh) %>% .$module
+
+# check that all the modules are accounted for 
+length(unique(c(
+  not_de, 
+  up_eAD, down_eAD,
+  up_AD, down_AD, 
+  up_ADDS, down_ADDS
+)))
+# [1] 166
+
+#-------------------------------------------------------------------------#
+# Set up overlapping sets of modules
+#-------------------------------------------------------------------------#
+
+up_all <- Reduce(intersect, list(up_eAD, up_AD, up_ADDS))
+up_any <- Reduce(union, list(up_eAD, up_AD, up_ADDS))
+
+# modules that are up only in one of the groups
+up_eAD_only <- setdiff(up_eAD, Reduce(union, c(up_AD, up_ADDS, down_AD, down_ADDS)))
+up_AD_only <- setdiff(up_AD, Reduce(union, c(up_eAD, up_ADDS, down_eAD, down_ADDS)))
+up_ADDS_only <- setdiff(up_ADDS, Reduce(union, c(up_eAD, up_AD, down_eAD, down_AD)))
+
+down_all <- Reduce(intersect, list(down_eAD, down_AD, down_ADDS))
+down_any <- Reduce(union, list(down_eAD, down_AD, down_ADDS))
+
+# modules that are down only in one of the groups
+down_eAD_only <- setdiff(down_eAD, Reduce(union, c(up_AD, up_ADDS, down_AD, down_ADDS)))
+down_AD_only <- setdiff(down_AD, Reduce(union, c(up_eAD, up_ADDS, down_eAD, down_ADDS)))
+down_ADDS_only <- setdiff(down_ADDS, Reduce(union, c(up_eAD, up_AD, down_eAD, down_AD)))
+
+#-------------------------------------------------------------------------#
+# Identify conflicting sets of modules
+#-------------------------------------------------------------------------#
+up_eAD_down_other <- intersect(up_eAD, union(down_AD, down_ADDS))
+up_AD_down_other <- intersect(up_AD, union(down_eAD, down_ADDS))
+up_ADDS_down_other <- intersect(up_ADDS, union(down_eAD, down_AD))
+
+down_eAD_up_other <- intersect(down_eAD, union(up_AD, up_ADDS))
+down_AD_up_other <- intersect(down_AD, union(up_eAD, up_ADDS))
+down_ADDS_up_other <- intersect(down_ADDS, union(up_eAD, up_AD))
+
+
+```
+
+Plot the modules that are not DE 
+
+```{r eval=FALSE}
+
+
+#-------------------------------------------------------------------------#
+# Plot the modules that are up in all
+#-------------------------------------------------------------------------#
+
+mod_lists <- list(
+  'not DE' = not_de
+)
+
+# make a plot -----------------------------------------------------------------
+# get the min/max values
+plot_range <- subset(DMEs, module %in% unlist(mod_lists)) %>% .$avg_log2FC %>% range
+if(plot_range[1] > 0){plot_range[1] <- 0}
+
+plot_list <- list()
+for(cur_group in names(mod_lists)){
+  
+  cur_mod_list <- mod_lists[[cur_group]]
+
+  plot_df <- subset(DMEs, module %in% cur_mod_list)
+  plot_df$ident.1 <- factor(as.character(plot_df$ident.1), levels=c('earlyAD', 'AD', 'AD_DS'))
+  rownames(plot_df) <- 1:nrow(plot_df)
+
+  # get the top mods for labeling
+  label_df_right <- plot_df[as.logical(as.numeric(rownames(plot_df)) %% 2),] %>% subset(ident.1 == 'AD_DS')
+  label_df_left <- plot_df[!as.logical(as.numeric(rownames(plot_df)) %% 2),] %>% subset(ident.1 == 'earlyAD')
+
+  p <- ggplot(plot_df, aes(x=ident.1, y = avg_log2FC, color=module, group=module)) + 
+    geom_hline(yintercept=0, linetype='dashed', color='black') +
+    geom_line(alpha=0.5) + 
+    geom_point(size=2, alpha=0.5) + 
+    scale_color_manual(values=mod_colors) +
+    scale_fill_manual(values=mod_colors) +
+    ylim(plot_range[1] - 0.1, plot_range[2] + 0.1) +
+    geom_text_repel(
+        data = label_df_right,
+        aes(x=ident.1, y = avg_log2FC , label=module, color=module),
+        color='black',
+        nudge_x = 0.5,
+        direction = "y",
+        hjust = "left",
+        min.segment.length=0,
+        max.overlaps=Inf,
+        size=3
+      # size=2
+      ) +
+      geom_text_repel(
+        data = label_df_left,
+        aes(x=ident.1, y = avg_log2FC , label=module, color=module),
+        color='black',
+        nudge_x = -0.5,
+        direction = "y",
+        hjust = "right",
+        min.segment.length=0,
+        max.overlaps=Inf,
+        size=3
+      # size=2
+      ) +
+    theme(
+            axis.line.x = element_blank(),
+            axis.line.y = element_blank(),
+            panel.border = element_rect(linewidth=1, color='black', fill=NA),
+            plot.title = element_text(hjust=0.5),
+            panel.grid = element_line(size=0.25, color='white'),
+            panel.background = element_rect(fill='grey92'),
+            #plot.margin = margin(c(0,0,0,0))
+    ) + NoLegend() + 
+    ylab(bquote("Avg. log"[2]~"(FC)")) + 
+    xlab('') + ggtitle(cur_group)
+
+  plot_list[[cur_group]] <- p
+
+}
+
+pdf(paste0(fig_dir, 'module_lineplot_not_de.pdf'), width=3, height=3)
+wrap_plots(plot_list, ncol=1)
+dev.off()
+
+
+```
+
+plot modules that are up / down in all 
+
+```{r eval=FALSE}
+
+#-------------------------------------------------------------------------#
+# Plot the modules that are up in all
+#-------------------------------------------------------------------------#
+
+# which of these are highest in eAD
+temp <- subset(DMEs, module %in% up_all) %>% 
+  group_by(module) %>% 
+  slice_max(order_by=avg_log2FC, n=1)
+
+highest_eAD <- subset(temp, ident.1 == 'earlyAD') %>% .$module
+highest_AD <- subset(temp, ident.1 == 'AD') %>% .$module
+highest_ADDS <- subset(temp, ident.1 == 'AD_DS') %>% .$module
+
+mod_lists <- list(
+  'earlyAD' = highest_eAD,
+  'AD' = highest_AD,
+  'AD_DS' = highest_ADDS
+)
+
+# make a plot -----------------------------------------------------------------
+# get the min/max values
+plot_range <- subset(DMEs, module %in% unlist(mod_lists)) %>% .$avg_log2FC %>% range
+if(plot_range[1] > 0){plot_range[1] <- 0}
+
+
+
+plot_list <- list()
+for(cur_group in names(mod_lists)){
+  
+  cur_mod_list <- mod_lists[[cur_group]]
+
+  plot_df <- subset(DMEs, module %in% cur_mod_list)
+  plot_df$ident.1 <- factor(as.character(plot_df$ident.1), levels=c('earlyAD', 'AD', 'AD_DS'))
+  rownames(plot_df) <- 1:nrow(plot_df)
+
+  # add module sizes:
+  plot_df$mod_size <- as.numeric(mod_size[as.character(plot_df$module)])
+
+  # get the top mods for labeling
+  top_mods <- plot_df %>% subset(ident.1 == cur_group) %>% slice_max(order_by=avg_log2FC, n=10) %>% .$module
+  label_df_right <- plot_df[as.logical(as.numeric(rownames(plot_df)) %% 2),] %>% subset(ident.1 == cur_group & module %in% top_mods)
+  label_df_left <- plot_df[!as.logical(as.numeric(rownames(plot_df)) %% 2),] %>% subset(ident.1 == cur_group & module %in% top_mods)
+
+  p <- ggplot(plot_df, aes(x=ident.1, y = avg_log2FC, color=module, group=module)) + 
+    geom_hline(yintercept=0, linetype='dashed', color='black') +
+    geom_line(alpha=0.75, size=1) + 
+    geom_point(alpha=0.75) + 
+    geom_point(
+      inherit.aes=FALSE,
+      data = subset(plot_df, p_val_adj <= 0.05 & avg_log2FC >= logfc_thresh),
+      aes(x=ident.1, y = avg_log2FC, fill=module, group=module),
+      color='black',
+      shape=21,
+      size=3
+    ) +
+    scale_color_manual(values=mod_colors) +
+    scale_fill_manual(values=mod_colors) +
+    ylim(plot_range[1] - 0.1, plot_range[2] + 0.1) +
+    geom_text_repel(
+        data = label_df_right,
+        aes(x=ident.1, y = avg_log2FC , label=module, color=module),
+        color='black',
+        nudge_x = 0.5,
+        direction = "y",
+        hjust = "left",
+        min.segment.length=0,
+        max.overlaps=Inf,
+        size=5
+      # size=2
+      ) +
+      geom_text_repel(
+        data = label_df_left,
+        aes(x=ident.1, y = avg_log2FC , label=module, color=module),
+        color='black',
+        nudge_x = -0.5,
+        direction = "y",
+        hjust = "right",
+        min.segment.length=0,
+        max.overlaps=Inf,
+        size=5
+      # size=2
+      ) +
+    theme(
+            axis.line.x = element_blank(),
+            axis.line.y = element_blank(),
+            panel.border = element_rect(linewidth=1, color='black', fill=NA),
+            plot.title = element_text(hjust=0.5),
+            panel.grid = element_line(size=0.25, color='white'),
+            panel.background = element_rect(fill='grey92'),
+            #plot.margin = margin(c(0,0,0,0))
+    ) + NoLegend() + 
+    ylab(bquote("Avg log"[2]~"(FC)")) + 
+    xlab('') + ggtitle(cur_group) + 
+    RotatedAxis()
+
+  plot_list[[cur_group]] <- p
+
+}
+
+pdf(paste0(fig_dir, 'module_lineplot_up_all.pdf'), width=9, height=3.5)
+wrap_plots(plot_list, ncol=3)
+dev.off()
+
+
+#-------------------------------------------------------------------------#
+# Plot the modules that are down in all
+#-------------------------------------------------------------------------#
+
+temp <- subset(DMEs, module %in% down_all) %>% 
+  group_by(module) %>% 
+  slice_min(order_by=avg_log2FC, n=1)
+
+highest_eAD <- subset(temp, ident.1 == 'earlyAD') %>% .$module
+highest_AD <- subset(temp, ident.1 == 'AD') %>% .$module
+highest_ADDS <- subset(temp, ident.1 == 'AD_DS') %>% .$module
+
+mod_lists <- list(
+  'earlyAD' = highest_eAD,
+  'AD' = highest_AD,
+  'AD_DS' = highest_ADDS
+)
+
+# make a plot -----------------------------------------------------------------
+
+# get the min/max values
+plot_range <- subset(DMEs, module %in% unlist(mod_lists)) %>% .$avg_log2FC %>% range
+if(plot_range[2] < 0){plot_range[2] <- 0}
+
+plot_list <- list()
+for(cur_group in names(mod_lists)){
+  
+  cur_mod_list <- mod_lists[[cur_group]]
+
+  plot_df <- subset(DMEs, module %in% cur_mod_list)
+  if(nrow(plot_df) == 0){
+    next
+  }
+  plot_df$ident.1 <- factor(as.character(plot_df$ident.1), levels=c('earlyAD', 'AD', 'AD_DS'))
+  rownames(plot_df) <- 1:nrow(plot_df)
+
+  # get the top mods for labeling
+  top_mods <- plot_df %>% subset(ident.1 == cur_group) %>% slice_min(order_by=avg_log2FC, n=10) %>% .$module
+  label_df_right <- plot_df[as.logical(as.numeric(rownames(plot_df)) %% 2),] %>% subset(ident.1 == cur_group & module %in% top_mods)
+  label_df_left <- plot_df[!as.logical(as.numeric(rownames(plot_df)) %% 2),] %>% subset(ident.1 == cur_group & module %in% top_mods)
+
+  p <- ggplot(plot_df, aes(x=ident.1, y = avg_log2FC, color=module, group=module)) + 
+    geom_hline(yintercept=0, linetype='dashed', color='black') +
+    geom_line(alpha=0.75) + 
+    geom_point(size=2, alpha=0.75) + 
+    geom_point(
+      inherit.aes=FALSE,
+      data = subset(plot_df, p_val_adj <= 0.05 & avg_log2FC <= logfc_thresh),
+      aes(x=ident.1, y = avg_log2FC, fill=module, group=module),
+      color='black',
+      shape=21,
+      size=3
+    ) +
+    scale_color_manual(values=mod_colors) +
+    scale_fill_manual(values=mod_colors) +
+    ylim(plot_range[1] - 0.1, plot_range[2] + 0.1) +
+    geom_text_repel(
+        data = label_df_right,
+        aes(x=ident.1, y = avg_log2FC , label=module, color=module),
+        color='black',
+        nudge_x = 0.5,
+        direction = "y",
+        hjust = "left",
+        min.segment.length=0,
+        max.overlaps=Inf,
+        size=5
+      ) +
+      geom_text_repel(
+        data = label_df_left,
+        aes(x=ident.1, y = avg_log2FC , label=module, color=module),
+        color='black',
+        nudge_x = -0.5,
+        direction = "y",
+        hjust = "right",
+        min.segment.length=0,
+        max.overlaps=Inf,
+        size=5
+      ) +
+    theme(
+            axis.line.x = element_blank(),
+            axis.line.y = element_blank(),
+            panel.border = element_rect(linewidth=1, color='black', fill=NA),
+            plot.title = element_text(hjust=0.5),
+            panel.grid = element_line(size=0.25, color='white'),
+            panel.background = element_rect(fill='grey92'),
+            #plot.margin = margin(c(0,0,0,0))
+    ) + NoLegend() + 
+    ylab(bquote("Avg. log"[2]~"(FC)")) + 
+    xlab('') + ggtitle(cur_group) + 
+    RotatedAxis()
+
+  plot_list[[cur_group]] <- p
+
+}
+
+pdf(paste0(fig_dir, 'module_lineplot_down_all.pdf'), width=9, height=3.5)
+wrap_plots(list(plot_list[[1]], plot_list[[2]], plot_list[[2]]), ncol=3)
+dev.off()
+
+```
+
+Plot modules that are up/down in just one group 
+
+```{r eval=FALSE}
+
+#-------------------------------------------------------------------------#
+# Plot the trajectories for modules that are up in just one group
+#-------------------------------------------------------------------------#
+
+mod_lists <- list(
+  'earlyAD' = up_eAD_only,
+  'AD' = up_AD_only,
+  'AD_DS' = up_ADDS_only
+)
+
+# make a plot -----------------------------------------------------------------
+
+# get the min/max values
+plot_range <- subset(DMEs, module %in% unlist(mod_lists)) %>% .$avg_log2FC %>% range
+
+plot_list <- list()
+for(cur_group in names(mod_lists)){
+  
+  cur_mod_list <- mod_lists[[cur_group]]
+
+  plot_df <- subset(DMEs, module %in% cur_mod_list)
+  plot_df$ident.1 <- factor(as.character(plot_df$ident.1), levels=c('earlyAD', 'AD', 'AD_DS'))
+  rownames(plot_df) <- 1:nrow(plot_df)
+
+  # get the top mods for labeling
+  top_mods <- plot_df %>% subset(ident.1 == cur_group) %>% slice_max(order_by=avg_log2FC, n=10) %>% .$module
+  label_df_right <- plot_df[as.logical(as.numeric(rownames(plot_df)) %% 2),] %>% subset(ident.1 == cur_group & module %in% top_mods)
+  label_df_left <- plot_df[!as.logical(as.numeric(rownames(plot_df)) %% 2),] %>% subset(ident.1 == cur_group & module %in% top_mods)
+
+  p <- ggplot(plot_df, aes(x=ident.1, y = avg_log2FC, color=module, group=module)) + 
+    geom_hline(yintercept=0, linetype='dashed', color='black') +
+    geom_line(alpha=0.75) + 
+    geom_point(size=2, alpha=0.75) + 
+    geom_point(
+      inherit.aes=FALSE,
+      data = subset(plot_df, p_val_adj <= 0.05 & avg_log2FC >= logfc_thresh),
+      aes(x=ident.1, y = avg_log2FC, fill=module, group=module),
+      color='black',
+      shape=21,
+      size=3
+    ) +
+    scale_color_manual(values=mod_colors) +
+    scale_fill_manual(values=mod_colors) +
+    ylim(plot_range[1] - 0.1, plot_range[2] + 0.1) +
+    geom_text_repel(
+        data = label_df_right,
+        aes(x=ident.1, y = avg_log2FC , label=module, color=module),
+        color='black',
+        nudge_x = 0.5,
+        direction = "y",
+        hjust = "left",
+        min.segment.length=0,
+        max.overlaps=Inf,
+       size=5
+      ) +
+      geom_text_repel(
+        data = label_df_left,
+        aes(x=ident.1, y = avg_log2FC , label=module, color=module),
+        color='black',
+        nudge_x = -0.5,
+        direction = "y",
+        hjust = "right",
+        min.segment.length=0,
+        max.overlaps=Inf,
+       size=5
+      ) +
+    theme(
+            axis.line.x = element_blank(),
+            axis.line.y = element_blank(),
+            panel.border = element_rect(linewidth=1, color='black', fill=NA),
+            plot.title = element_text(hjust=0.5),
+            panel.grid = element_line(size=0.25, color='white'),
+            panel.background = element_rect(fill='grey92'),
+            #plot.margin = margin(c(0,0,0,0))
+    ) + NoLegend() + 
+    ylab(bquote("Avg. log"[2]~"(FC)")) + 
+    xlab('') + ggtitle(cur_group) + 
+    RotatedAxis()
+
+  plot_list[[cur_group]] <- p
+
+}
+
+pdf(paste0(fig_dir, 'module_lineplot_up_exclusive.pdf'), width=9, height=3.5)
+wrap_plots(plot_list, ncol=3)
+dev.off()
+
+
+
+#-------------------------------------------------------------------------#
+# Plot the trajectories for modules that are down 
+#-------------------------------------------------------------------------#
+
+mod_lists <- list(
+  'earlyAD' = down_eAD_only,
+  'AD' = down_AD_only ,
+  'AD_DS' = down_ADDS_only
+)
+
+
+# make a plot -----------------------------------------------------------------
+
+# get the min/max values
+plot_range <- subset(DMEs, module %in% unlist(mod_lists)) %>% .$avg_log2FC %>% range
+
+plot_list <- list()
+for(cur_group in names(mod_lists)){
+  
+  cur_mod_list <- mod_lists[[cur_group]]
+
+  plot_df <- subset(DMEs, module %in% cur_mod_list)
+  plot_df$ident.1 <- factor(as.character(plot_df$ident.1), levels=c('earlyAD', 'AD', 'AD_DS'))
+  rownames(plot_df) <- 1:nrow(plot_df)
+
+  # get the top mods for labeling
+  top_mods <- plot_df %>% subset(ident.1 == cur_group) %>% slice_min(order_by=avg_log2FC, n=10) %>% .$module
+ # label_df_right <- plot_df[as.logical(as.numeric(rownames(plot_df)) %% 2),] %>% subset(ident.1 == 'AD_DS' & module %in% top_mods)
+ # label_df_left <- plot_df[!as.logical(as.numeric(rownames(plot_df)) %% 2),] %>% subset(ident.1 == 'earlyAD' & module %in% top_mods)
+  label_df_right <- plot_df[as.logical(as.numeric(rownames(plot_df)) %% 2),] %>% subset(ident.1 == cur_group & module %in% top_mods)
+  label_df_left <- plot_df[!as.logical(as.numeric(rownames(plot_df)) %% 2),] %>% subset(ident.1 == cur_group & module %in% top_mods)
+
+  p <- ggplot(plot_df, aes(x=ident.1, y = avg_log2FC, color=module, group=module)) + 
+    geom_hline(yintercept=0, linetype='dashed', color='black') +
+    geom_line(alpha=0.75) + 
+    geom_point(size=2, alpha=0.75) + 
+    geom_point(
+      inherit.aes=FALSE,
+      data = subset(plot_df, p_val_adj <= 0.05 & avg_log2FC <= -logfc_thresh),
+      aes(x=ident.1, y = avg_log2FC, fill=module, group=module),
+      color='black',
+      shape=21,
+      size=3
+    ) +
+    scale_color_manual(values=mod_colors) +
+    scale_fill_manual(values=mod_colors) +
+    ylim(plot_range[1] - 0.1, plot_range[2] + 0.1) +
+    geom_text_repel(
+        data = label_df_right,
+        aes(x=ident.1, y = avg_log2FC , label=module, color=module),
+        color='black',
+        nudge_x = 0.5,
+        direction = "y",
+        hjust = "left",
+        min.segment.length=0,
+        max.overlaps=Inf,
+       size=5
+      ) +
+      geom_text_repel(
+        data = label_df_left,
+        aes(x=ident.1, y = avg_log2FC , label=module, color=module),
+        color='black',
+        nudge_x = -0.5,
+        direction = "y",
+        hjust = "right",
+        min.segment.length=0,
+        max.overlaps=Inf,
+       size=5
+      ) +
+    theme(
+            axis.line.x = element_blank(),
+            axis.line.y = element_blank(),
+            panel.border = element_rect(linewidth=1, color='black', fill=NA),
+            plot.title = element_text(hjust=0.5),
+            panel.grid = element_line(size=0.25, color='white'),
+            panel.background = element_rect(fill='grey92'),
+            #plot.margin = margin(c(0,0,0,0))
+    ) + NoLegend() + 
+    ylab(bquote("Avg. log"[2]~"(FC)")) + 
+    xlab('') + ggtitle(cur_group) + 
+    RotatedAxis()
+
+  plot_list[[cur_group]] <- p
+
+}
+
+pdf(paste0(fig_dir, 'module_lineplot_down_exclusive.pdf'), width=9, height=3.5)
+wrap_plots(plot_list, ncol=3)
+dev.off()
+
+```
+
+Plot modules that are conflicting across groups
+
+```{r eval=FALSE}
+
+#-------------------------------------------------------------------------#
+# Plot the trajectories for modules that are up in one
+#-------------------------------------------------------------------------#
+
+mod_lists <- list(
+  'earlyAD' = up_eAD_down_other,
+  'AD' = up_AD_down_other,
+  'AD_DS' = up_ADDS_down_other
+)
+
+# make a plot -----------------------------------------------------------------
+
+# get the min/max values
+plot_range <- subset(DMEs, module %in% unlist(mod_lists)) %>% .$avg_log2FC %>% range
+
+plot_list <- list()
+for(cur_group in names(mod_lists)){
+  
+  cur_mod_list <- mod_lists[[cur_group]]
+
+  plot_df <- subset(DMEs, module %in% cur_mod_list)
+  plot_df$ident.1 <- factor(as.character(plot_df$ident.1), levels=c('earlyAD', 'AD', 'AD_DS'))
+  rownames(plot_df) <- 1:nrow(plot_df)
+
+  # get the top mods for labeling
+  top_mods <- plot_df %>% subset(ident.1 == cur_group) %>% slice_max(order_by=avg_log2FC, n=10) %>% .$module
+  label_df_right <- plot_df[as.logical(as.numeric(rownames(plot_df)) %% 2),] %>% subset(ident.1 == cur_group & module %in% top_mods)
+  label_df_left <- plot_df[!as.logical(as.numeric(rownames(plot_df)) %% 2),] %>% subset(ident.1 == cur_group & module %in% top_mods)
+
+  p <- ggplot(plot_df, aes(x=ident.1, y = avg_log2FC, color=module, group=module)) + 
+    geom_hline(yintercept=0, linetype='dashed', color='black') +
+    geom_line(alpha=0.75) + 
+    geom_point(size=2, alpha=0.75) + 
+    geom_point(
+      inherit.aes=FALSE,
+      data = subset(plot_df, p_val_adj <= 0.05 & avg_log2FC >= logfc_thresh),
+      aes(x=ident.1, y = avg_log2FC, fill=module, group=module),
+      color='black',
+      shape=21,
+      size=3
+    ) +
+    scale_color_manual(values=mod_colors) +
+    scale_fill_manual(values=mod_colors) +
+    ylim(plot_range[1] - 0.1, plot_range[2] + 0.1) +
+    geom_text_repel(
+        data = label_df_right,
+        aes(x=ident.1, y = avg_log2FC , label=module, color=module),
+        color='black',
+        nudge_x = 0.5,
+        direction = "y",
+        hjust = "left",
+        min.segment.length=0,
+        max.overlaps=Inf,
+       size=5
+      ) +
+      geom_text_repel(
+        data = label_df_left,
+        aes(x=ident.1, y = avg_log2FC , label=module, color=module),
+        color='black',
+        nudge_x = -0.5,
+        direction = "y",
+        hjust = "right",
+        min.segment.length=0,
+        max.overlaps=Inf,
+       size=5
+      ) +
+    theme(
+            axis.line.x = element_blank(),
+            axis.line.y = element_blank(),
+            panel.border = element_rect(linewidth=1, color='black', fill=NA),
+            plot.title = element_text(hjust=0.5),
+            panel.grid = element_line(size=0.25, color='white'),
+            panel.background = element_rect(fill='grey92'),
+            #plot.margin = margin(c(0,0,0,0))
+    ) + NoLegend() + 
+    ylab(bquote("Avg. log"[2]~"(FC)")) + 
+    xlab('') + ggtitle(cur_group) + 
+    RotatedAxis()
+
+  plot_list[[cur_group]] <- p
+
+}
+
+pdf(paste0(fig_dir, 'module_lineplot_up_conflicting.pdf'), width=9, height=3.5)
+wrap_plots(plot_list, ncol=3)
+dev.off()
+
+
+
+#-------------------------------------------------------------------------#
+# Plot the trajectories for modules that are down 
+#-------------------------------------------------------------------------#
+
+mod_lists <- list(
+  'earlyAD' = down_eAD_up_other,
+  'AD' = down_AD_up_other,
+  'AD_DS' = down_ADDS_up_other
+)
+
+
+# make a plot -----------------------------------------------------------------
+
+# get the min/max values
+plot_range <- subset(DMEs, module %in% unlist(mod_lists)) %>% .$avg_log2FC %>% range
+
+plot_list <- list()
+for(cur_group in names(mod_lists)){
+  
+  cur_mod_list <- mod_lists[[cur_group]]
+
+  plot_df <- subset(DMEs, module %in% cur_mod_list)
+  if(nrow(plot_df) == 0){next}
+  plot_df$ident.1 <- factor(as.character(plot_df$ident.1), levels=c('earlyAD', 'AD', 'AD_DS'))
+  rownames(plot_df) <- 1:nrow(plot_df)
+
+  # get the top mods for labeling
+  top_mods <- plot_df %>% subset(ident.1 == cur_group) %>% slice_min(order_by=avg_log2FC, n=10) %>% .$module
+ # label_df_right <- plot_df[as.logical(as.numeric(rownames(plot_df)) %% 2),] %>% subset(ident.1 == 'AD_DS' & module %in% top_mods)
+ # label_df_left <- plot_df[!as.logical(as.numeric(rownames(plot_df)) %% 2),] %>% subset(ident.1 == 'earlyAD' & module %in% top_mods)
+  label_df_right <- plot_df[as.logical(as.numeric(rownames(plot_df)) %% 2),] %>% subset(ident.1 == cur_group & module %in% top_mods)
+  label_df_left <- plot_df[!as.logical(as.numeric(rownames(plot_df)) %% 2),] %>% subset(ident.1 == cur_group & module %in% top_mods)
+
+  p <- ggplot(plot_df, aes(x=ident.1, y = avg_log2FC, color=module, group=module)) + 
+    geom_hline(yintercept=0, linetype='dashed', color='black') +
+    geom_line(alpha=0.75) + 
+    geom_point(size=2, alpha=0.75) + 
+    geom_point(
+      inherit.aes=FALSE,
+      data = subset(plot_df, p_val_adj <= 0.05 & avg_log2FC <= -logfc_thresh),
+      aes(x=ident.1, y = avg_log2FC, fill=module, group=module),
+      color='black',
+      shape=21,
+      size=3
+    ) +
+    scale_color_manual(values=mod_colors) +
+    scale_fill_manual(values=mod_colors) +
+    ylim(plot_range[1] - 0.1, plot_range[2] + 0.1) +
+    geom_text_repel(
+        data = label_df_right,
+        aes(x=ident.1, y = avg_log2FC , label=module, color=module),
+        color='black',
+        nudge_x = 0.5,
+        direction = "y",
+        hjust = "left",
+        min.segment.length=0,
+        max.overlaps=Inf,
+      size=5
+      ) +
+      geom_text_repel(
+        data = label_df_left,
+        aes(x=ident.1, y = avg_log2FC , label=module, color=module),
+        color='black',
+        nudge_x = -0.5,
+        direction = "y",
+        hjust = "right",
+        min.segment.length=0,
+        max.overlaps=Inf,
+       size=5
+      ) +
+    theme(
+            axis.line.x = element_blank(),
+            axis.line.y = element_blank(),
+            panel.border = element_rect(linewidth=1, color='black', fill=NA),
+            plot.title = element_text(hjust=0.5),
+            panel.grid = element_line(size=0.25, color='white'),
+            panel.background = element_rect(fill='grey92'),
+            #plot.margin = margin(c(0,0,0,0))
+    ) + NoLegend() + 
+    ylab(bquote("Avg. log"[2]~"(FC)")) + 
+    xlab('') + ggtitle(cur_group) + 
+    RotatedAxis()
+
+  plot_list[[cur_group]] <- p
+
+}
+
+pdf(paste0(fig_dir, 'module_lineplot_down_conflicting.pdf'), width=9, height=3.5)
+wrap_plots(list(plot_list[[1]], plot_list[[2]], plot_list[[2]]), ncol=3)
+dev.off()
+
+```
+
+Try running EnrichR on these sets of modules? 
+
+```{r eval=FALSE}
+
+library(enrichR)
+dbs <-c('GO_Biological_Process_2021','GO_Cellular_Component_2021','GO_Molecular_Function_2021', 'WikiPathway_2021_Human', 'KEGG_2021_Human')
+
+genes_use <- GetWGCNAGenes(seurat_human)
+
+all_modules <- Reduce(rbind, lapply(groups, function(x){
+
+    cur_mods <- GetModules(seurat_human, wgcna_name = x)[,1:3]
+    cur_mods <- cur_mods[genes_use,]
+    cur_mods$gene_name <- genes_use
+    cur_mods$module <- ifelse(is.na(cur_mods$module), 'grey' , as.character(cur_mods$module))
+    cur_mods$color <- ifelse(is.na(cur_mods$color), 'grey' , as.character(cur_mods$color))
+    
+    cur_mods <- cur_mods %>% 
+    dplyr::select(c(gene_name, module, color))
+
+    cur_mods 
+
+}))
+all_modules <- all_modules %>% subset(module != 'grey') 
+
+
+n_hubs <- 25
+all_hubs <- Reduce(rbind, lapply(groups, function(x){
+  GetHubGenes(seurat_human, n_hubs, wgcna_name = x)[,1:3]
+}))
+
+
+
+
+
+# list of inputs to enrichr
+input_list <- list(
+  up_all = subset(all_hubs, module %in% up_all) %>% .$gene_name %>% unique,
+  up_eAD_only = subset(all_hubs, module %in% up_eAD_only) %>% .$gene_name %>% unique,
+  up_AD_only = subset(all_hubs, module %in% up_AD_only) %>% .$gene_name %>% unique,
+  up_ADDS_only = subset(all_hubs, module %in% up_ADDS_only) %>% .$gene_name %>% unique,
+  down_all = subset(all_hubs, module %in% down_all) %>% .$gene_name %>% unique,
+  down_eAD_only = subset(all_hubs, module %in% down_eAD_only) %>% .$gene_name %>% unique,
+  down_AD_only = subset(all_hubs, module %in% down_AD_only) %>% .$gene_name %>% unique,
+  down_ADDS_only = subset(all_hubs, module %in% down_ADDS_only) %>% .$gene_name %>% unique
+)
+
+# size of lists
+lapply(input_list, function(x){
+  print(length(x))
+})
+
+# run enrichr and combine outputs
+enrichr_df <- do.call(rbind, lapply(names(input_list), function(x){
+  if(length(input_list[[x]]) > 0){
+    cur_enrich <- enrichr(input_list[[x]], dbs)
+    Sys.sleep(10)
+  } else{return(data.frame())}
+  cur_df <- do.call(rbind, lapply(dbs, function(cur_db){
+    df <- cur_enrich[[cur_db]]
+    if(nrow(df) > 1){df$group <- x; df$db <- cur_db}
+    else{df <- data.frame()}
+    df
+  }))
+}))
+
+# number of genes
+enrichr_df$ngenes <- unlist(lapply(strsplit(enrichr_df$Genes, ';'), function(x){length(x)}))
+
+# write the significant results to a file
+enrichr_df %>%
+  subset(P.value < 0.05 & ngenes > 2) %>%
+  write.table(
+    file=paste0(data_dir, 'spatial_module_enrichR_results2.tsv'),
+    quote=FALSE, row.names=FALSE, sep='\t'
+  )
+
+enrichr_df <- read.delim(paste0(data_dir, 'spatial_module_enrichR_results2.tsv'), sep='\t')
+
+#---------------------------------------------------------------------------#
+# plot the selected terms
+
+selected_terms <- read.delim(paste0(data_dir, 'spatial_module_enrichR_selected.txt'), sep='\t')
+selected_terms <- subset(enrichr_df, Term %in% selected_terms$Term & P.value < 0.005)
+
+table(selected_terms$group)
+
+
+cur_direction <- 'down'; cmap <- mako
+cur_direction <- 'up'; cmap <- magma
+selected_terms <- selected_terms[grepl(cur_direction, selected_terms$group),]
+
+selected_terms$group <- factor(
+  as.character(selected_terms$group),
+  levels = paste0(cur_direction, '_', c('eAD_only', 'AD_only', 'ADDS_only', 'all'))
+)
+
+# set max pval
+quantile(-log(selected_terms$P.value), 0.95)
+max_p <- 10
+
+selected_terms$logp <- -log(selected_terms$P.value)
+selected_terms$logp <- ifelse(selected_terms$logp > max_p, max_p, selected_terms$logp)
+
+
+
+# remove GO Term ID
+selected_terms$Term <- str_replace(selected_terms$Term, " \\s*\\([^\\)]+\\)", "")
+
+selected_terms <- selected_terms %>%
+  arrange(group)
+
+
+selected_terms$Term <- factor(
+  as.character(selected_terms$Term),
+  levels = rev(unique(as.character(selected_terms$Term)))
+)
+
+p <- selected_terms %>%
+  ggplot(aes(x = group, y = Term, color = logp, size=log(Odds.Ratio))) +
+  geom_point() +
+  scale_color_stepsn(colors=rev(cmap(256))) +
+  RotatedAxis() + xlab('') + ylab('') +
+  coord_equal() + 
+  theme(
+    axis.title.x = element_blank(),
+    axis.title.y = element_blank(),
+    panel.border = element_rect(size=1, color='black', fill=NA),
+    axis.line.x = element_blank(),
+    axis.line.y = element_blank(),
+    plot.margin = margin(0,0,0,0),
+    panel.grid = element_line(size=0.25, color='lightgrey')
+  )
+
+pdf(paste0(fig_dir, 'selected_GO_terms_modules_', cur_direction, '.pdf'), width=7, height=5)
+p 
+dev.off()
+
+```

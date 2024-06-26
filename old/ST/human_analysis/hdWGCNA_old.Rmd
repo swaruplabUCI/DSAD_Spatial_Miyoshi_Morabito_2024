@@ -1,0 +1,1220 @@
+
+Human Grey matter hdWGCNA
+```{r eval=FALSE}
+
+seurat_human <- subset(seurat_human, annotation %in% c('L2-3', 'L3-4', 'L3-4-5', 'L5-6', 'L6b'))
+
+seurat_human <- SetupForWGCNA(
+  seurat_human,
+  gene_select = "fraction",
+  fraction = 0.05,
+  group.by = 'annotation',
+  wgcna_name = "vis"
+)
+length(GetWGCNAGenes(seurat_human))
+
+
+# construct metaspots
+seurat_human <- MetaspotsByGroups(
+  seurat_human,
+  group.by = c("Sample"),
+  ident.group = "Sample"
+)
+
+seurat_human  <- NormalizeMetacells(seurat_human )
+
+
+seurat_human  <- SetDatExpr(
+    seurat_human,
+    group_name=c('L2-3', 'L3-4', 'L3-4-5', 'L5-6', 'L6b'),
+    group.by='annotation'
+)
+
+
+seurat_human <- TestSoftPowers(seurat_human)
+
+# plot the results:
+plot_list <- PlotSoftPowers(seurat_human)
+
+# assemble with patchwork
+pdf(paste0(fig_dir, 'grey_softpower.pdf'), width=12, height=8)
+wrap_plots(plot_list, ncol=2)
+dev.off()
+
+# construct wgcna network:
+seurat_human <- ConstructNetwork(
+  seurat_human,
+  PamStage = T,
+  tom_name='grey_TOM',
+  overwrite_tom=TRUE
+)
+
+# plot the dendrogram
+pdf(paste0(fig_dir, "grey_dendro.pdf"),height=3, width=6)
+PlotDendrogram(seurat_human, main='hdWGCNA Dendrogram')
+dev.off()
+
+```
+
+Try hdWGCNA with pseudo-bulk replicates:
+
+```{r eval=FALSE}
+
+library(magrittr)
+
+test <- GetDatExpr(seurat_human)
+
+
+
+wgcna_name <- 'vis'
+seurat_human <- SetupForWGCNA(
+  seurat_human,
+  gene_select = "fraction",
+  fraction = 0.05,
+  group.by = 'annotation',
+  wgcna_name = "vis"
+)
+length(GetWGCNAGenes(seurat_human))
+
+
+datExpr <- to_pseudobulk(
+    seurat_human,
+    replicate_col = 'Sample',
+    cell_type_col = 'annotation',
+    label_col = 'Diagnosis'
+)
+datExpr <- Reduce(cbind, lapply(names(datExpr), function(x){
+    cur <- datExpr[[x]]
+    colnames(cur) <- paste0(x, colnames(cur))
+    cur
+}))
+
+datExpr <- t(datExpr[GetWGCNAGenes(seurat_human),])
+
+# compute CPM:
+cpm <- t(apply(datExpr, 1, function(x){
+    y <- (x) / sum(x) * 1000000
+    log2(y + 1)
+}))
+
+
+
+
+seurat_human@misc[[wgcna_name]]$datExpr <- cpm
+
+
+
+seurat_human <- TestSoftPowers(seurat_human)
+
+# plot the results:
+plot_list <- PlotSoftPowers(seurat_human)
+
+# assemble with patchwork
+pdf(paste0(fig_dir, 'pb_grey_softpower.pdf'), width=12, height=8)
+wrap_plots(plot_list, ncol=2)
+dev.off()
+
+# construct wgcna network:
+seurat_human <- ConstructNetwork(
+  seurat_human,
+  #PamStage = T,
+    minModuleSize=50,
+    detectCutHeight=0.995,
+    mergeCutHeight=0.05,
+  tom_name='pb_grey_TOM',
+  overwrite_tom=TRUE
+)
+
+# plot the dendrogram
+pdf(paste0(fig_dir, "pb_dendro.pdf"),height=3, width=6)
+PlotDendrogram(seurat_human, main='hdWGCNA Dendrogram')
+dev.off()
+
+seurat_human <- ModuleEigengenes(
+  seurat_human,
+  group.by.vars="Sample",
+)
+
+seurat_human <- ModuleConnectivity(
+    seurat_human,
+    reassign_modules=FALSE
+)
+
+```
+
+
+
+Reset module names and colors
+
+```{r eval=FALSE}
+
+# run RenameModules
+seurat_human <- ResetModuleNames(
+  seurat_human,
+  new_name = "HSM"
+)
+
+modules <- GetModules(seurat_human)7
+mods <- levels(modules$module)
+mods <- mods[mods != 'grey']
+
+library(MetBrewer)
+
+modules <- GetModules(seurat_human)
+mods <- levels(modules$module)
+mod_colors <- dplyr::select(modules, c(module, color)) %>%
+  distinct %>% arrange(module) %>% .$color
+n_colors <- length(mod_colors) -1
+
+new_colors <- paste0(met.brewer("Signac", n=n_colors, type='continuous'))
+new_colors <- sample(new_colors, n_colors)
+
+seurat_human <- ResetModuleColors(seurat_human, new_colors)
+
+
+```
+
+Plotting
+
+```{r eval=FALSE}
+
+
+################################################################################
+# ME violin plots:
+################################################################################
+
+st_diag_cp <- c("Control" = "#B8DBC5", "earlyAD" = "#E7BDE1" , "AD" = "#CF8BA3", "AD_DS" = "#9E6D7F")
+
+
+human_cp <- c(
+      "L1" = "#8B3D5A", "L2-3" = "#E7BDE1", "L3-4" = "#E6A4CD",
+      "L3-4-5" = "#CF8BA3", "L5-6" = "#9E6D7F", "L6b" = "#CDAEB9", "WM1" = "#64BCDB", "WM2" = "#62A7D7", "WM3" = "#99C8D7")
+
+st_color_df <- data.frame(
+  colour = as.character(human_cp),
+  group = names(human_cp)
+)
+st_color_df$group <- factor(as.character(st_color_df$group), levels=levels(seurat_human$annotation))
+st_cp <- st_color_df$colour; names(st_cp) <- as.character(st_color_df$group)
+
+
+library(ggpubr)
+
+MEs <- GetMEs(seurat_human)
+modules <- GetModules(seurat_human)
+mods <- levels(modules$module)
+mods <- mods[mods!='grey']
+MEs <- MEs[,mods]
+
+meta <- seurat_human@meta.data
+seurat_human@meta.data <- cbind(meta, MEs)
+
+
+p <- custom_vln(
+    seurat_human,,
+    features = mods,
+    group.by = 'annotation',
+    add_boxplot=FALSE,
+    split.by = 'Diagnosis',
+    split_colors= st_diag_cp,
+    add_colorbar=TRUE,
+    plot_ymin = NA,
+    comparisons=NA,
+    group_color_df = st_color_df
+  )
+
+
+pdf(paste0(fig_dir, 'ME_vln_stack_test.pdf'), width=6, height=7)
+p
+dev.off()
+
+seurat_human@meta.data <- meta
+
+
+######################################################################
+# Plot ME featureplots
+######################################################################
+
+# representative samples
+human_rep_samples <- c(
+  'Dec_13_2021_Human5', 'Dec_20_2021_Human1',
+  'Dec_13_2021_Human6', 'Oct_2021_6',
+  'Dec_13_2021_Human3', 'Dec_13_2021_Human7',
+  'Nov_24_2021_VisiumHuman_12', 'Dec_13_2021_Human8'
+)
+
+MEs <- GetMEs(seurat_human)
+modules <- GetModules(seurat_human)
+mods <- levels(modules$module)
+mods <- mods[mods!='grey']
+MEs <- MEs[,mods]
+
+meta <- seurat_human@meta.data
+seurat_human@meta.data <- cbind(meta, MEs)
+
+for(cur_mod in mods){
+  print(cur_mod)
+
+  p <- SampleFeaturePlot(
+    seurat_human,
+    feature=cur_mod,
+    sample_labels = c("Diagnosis", 'Sex', 'Age'),
+    #samples_to_plot = human_rep_samples,
+    ncol = 10,
+    raster=TRUE,
+    plot_max = 'q99',
+    plot_min = 0,
+    colfunc = inferno,
+    rev_colors=TRUE,
+    #colfunc=colorRampPalette(c('grey90', cur_color), bias=2),
+    #rev_colors=FALSE,
+    dpi=600,
+    combine=FALSE
+  )
+
+  p <- lapply(p, function(x){
+    x + theme(
+      plot.title = element_text(face='bold', size=15, vjust=-1),
+      plot.margin = margin(0,0,0,0)
+      # plot.margin = margin(-1,-1,-1,-1)
+
+    )
+  })
+
+  patch <- wrap_plots(p, ncol=7, widths=1, heights=1) + plot_layout(guides='collect')
+
+  pdf(paste0(fig_dir, 'ME_featureplots/', cur_mod, '_featureplot.pdf'), width=12, height=12)
+#  print(p)
+  print(patch)
+  dev.off()
+
+}
+
+
+seurat_human@meta.data <- meta
+
+
+
+MEs <- GetMEs(seurat_human)
+modules <- GetModules(seurat_human)
+mods <- levels(modules$module)
+mods <- mods[mods!='grey']
+MEs <- MEs[,mods]
+
+meta <- seurat_human@meta.data
+seurat_human@meta.data <- cbind(meta, MEs)
+
+
+# make dotplot
+p <- DotPlot(
+  seurat_human,
+  group.by='annotation',
+  features = rev(mods)
+) + RotatedAxis() +
+  scale_color_gradient2(high='red', mid='grey95', low='blue') + xlab('') + ylab('') +
+  theme(
+    plot.title = element_text(hjust = 0.5),
+    axis.line.x = element_blank(),
+    axis.line.y = element_blank(),
+    panel.border = element_rect(colour = "black", fill=NA, size=1)
+  )
+
+pdf(paste0(fig_dir, 'dotplot_MEs.pdf'), width=8, height=4)
+p
+dev.off()
+
+seurat_human@meta.data <- meta
+
+
+```
+
+Network plots 
+
+```{r eval=FALSE}
+
+################################################################################
+
+library(igraph)
+
+# individual module networks
+ModuleNetworkPlot(
+  seurat_human,
+  outdir = paste0(fig_dir, 'hubNetworks/')
+)
+
+
+################################################################################
+# UMAP:
+################################################################################
+
+seurat_human <- RunModuleUMAP(
+  seurat_human,
+  n_hubs = 10,
+  n_neighbors=25,
+  min_dist=0.6,
+  spread=3,
+  target_weight=0.275,
+  supervised=TRUE
+)
+
+
+# get the hub gene UMAP table from the seurat object
+umap_df <- GetModuleUMAP(
+  seurat_human
+)
+
+# plot with ggplot
+p <- ggplot(umap_df, aes(x=UMAP1, y=UMAP2)) +
+  geom_point(
+   color=umap_df$color,
+   size=umap_df$kME*2
+  ) +
+  umap_theme()
+
+pdf(paste0(fig_dir, 'hubgene_umap_ggplot.pdf'), width=5, height=5)
+p
+dev.off()
+
+
+library(reshape2)
+library(igraph)
+
+pdf(paste0(fig_dir, 'hubgene_umap_igraph_labeled.pdf'), width=9, height=9)
+ModuleUMAPPlot(
+  seurat_human,
+  edge.alpha=0.2,
+  sample_edges=TRUE,
+  vertex.label.cex = 0.1, #font size
+  keep_grey_edges=FALSE,
+  edge_prop=0.075, # taking the top 20% strongest edges in each module
+  label_hubs=5 # how many hub genes to plot per module?
+)
+dev.off()
+
+
+
+pdf(paste0(fig_dir, 'hubgene_umap_igraph_unlabeled.pdf'), width=9, height=9)
+ModuleUMAPPlot(
+  seurat_human,
+  edge.alpha=0.2,
+  sample_edges=TRUE,
+  vertex.label.cex = 0.1, #font size
+  keep_grey_edges=FALSE,
+  edge_prop=0.075, # taking the top 20% strongest edges in each module
+  label_hubs=0 # how many hub genes to plot per module?
+)
+dev.off()
+
+
+```
+
+
+save results 
+
+```{r eval=FALSE}
+
+saveRDS(seurat_human, file=paste0(data_dir, "ADDS_seurat_processed_annotated_hdWGCNA.rds"))
+
+seurat_human <- readRDS(file=paste0(data_dir, "ADDS_seurat_processed_annotated_hdWGCNA.rds"))
+
+```
+
+
+Enrichment analysis
+
+```{r eval=FALSE}
+
+library(enrichR)
+
+dbs <-c('GO_Biological_Process_2021','GO_Cellular_Component_2021','GO_Molecular_Function_2021','WikiPathway_2021_Human', 'KEGG_2021_Human')
+
+# compute GO terms:
+seurat_human <- RunEnrichr(seurat_human, dbs=dbs, max_genes=Inf)
+
+# inspect the enrichr table:
+enrichr_df <- GetEnrichrTable(seurat_human) %>% subset(P.value < 0.05)
+write.table(enrichr_df, quote=FALSE, row.names=FALSE, sep='\t', file=paste0(data_dir, 'human_vis_enrichr.tsv'))
+
+
+
+################################################################################
+# Plot selected GO terms:
+#################################################################################
+
+
+modules <- GetModules(seurat_human)
+color_df <- modules %>% subset(module!='grey') %>%
+  select(c(module, color)) %>% distinct %>%
+  mutate(module=droplevels(module)) %>%
+  dplyr::rename(c(group=module, colour=color))
+mods <- levels(modules$module); mods <- mods[mods != 'grey']
+
+color_df$group <- factor(as.character(color_df$group), levels=mods)
+
+# helper function to wrap text
+wrapText <- function(x, len) {
+    sapply(x, function(y) paste(strwrap(y, len), collapse = "\n"), USE.NAMES = FALSE)
+}
+
+combined_output <- GetEnrichrTable(seurat_human)
+selected_terms <- read.delim('data/human_vis_enrichr_selected.txt', sep='\t', header=1)
+
+# subset selected terms
+selected_terms <- subset(combined_output, Term %in% selected_terms$Term & P.value < 0.05)
+
+selected_terms$group <- factor(
+  as.character(selected_terms$module),
+  levels = mods
+)
+
+# set max pval
+
+quantile(-log(selected_terms$P.value), 0.95)
+max_p <- 10
+
+selected_terms$logp <- -log(selected_terms$P.value)
+selected_terms$logp <- ifelse(selected_terms$logp > max_p, max_p, selected_terms$logp)
+
+# remove GO Term ID
+selected_terms$Term <- str_replace(selected_terms$Term, " \\s*\\([^\\)]+\\)", "")
+
+selected_terms <- selected_terms %>%
+  arrange(group)
+
+
+selected_terms$wrap <- wrapText(selected_terms$Term, 35)
+
+selected_terms$Term <- factor(
+  as.character(selected_terms$Term),
+  levels = rev(unique(as.character(selected_terms$Term)))
+)
+
+# GO Term dot plot
+
+p <- selected_terms %>%
+  ggplot(aes(x = group, y = Term, color =logp, size=log(Combined.Score))) +
+  geom_point() +
+  scale_color_stepsn(colors=rev(magma(256))) +
+  RotatedAxis() + xlab('') + ylab('') +
+  theme(
+    axis.title.x = element_blank(),
+    axis.title.y = element_blank(),
+    panel.border = element_rect(size=1, color='black', fill=NA),
+    axis.line.x = element_blank(),
+    axis.line.y = element_blank(),
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank(),
+    plot.margin = margin(0,0,0,0),
+    panel.grid = element_line(size=0.25, color='lightgrey')
+  )+ labs(
+    color = bquote("-log"[10]~"(P)"),
+    size= bquote("log"[10]~"(Enrich)")
+  )
+
+
+# make the colorbar as its own heatmap
+color_df$var <- 1
+cp <- color_df$colour; names(cp) <- color_df$group
+colorbar <- color_df %>%
+  ggplot(aes(x=group, y=var, fill=group)) +
+  geom_tile() +
+  scale_fill_manual(values=cp) +
+  coord_equal() +
+  NoLegend() + RotatedAxis() +
+  theme(
+    plot.title=element_blank(),
+    axis.line=element_blank(),
+    axis.ticks.y =element_blank(),
+    axis.text.y = element_blank(),
+    axis.title = element_blank(),
+    plot.margin=margin(0,0,0,0),
+  )
+
+
+
+
+pdf(paste0(fig_dir, 'human_vis_selected_GO_terms.pdf'), width=11, height=7)
+p / colorbar #+ plot_layout(heights=c(20,1))
+dev.off()
+
+
+
+
+
+```
+
+Overlap with snRNA marker genes 
+
+```{r eval=FALSE}
+
+# load cluster markers
+markers <- read.csv(paste0('/dfs7/swaruplab/smorabit/analysis/ADDS_2021/splitseq/integration/DEGs/combined/cluster_markers.csv'))
+group_levels <- levels(seurat_obj$cell_identity)
+markers$group <- factor(as.character(markers$group), levels=group_levels)
+markers <- markers[!grepl('MT-', markers$gene),]
+
+# compute marker gene overlaps
+library(GeneOverlap)
+overlap_df <- OverlapModulesDEGs(
+  seurat_human,
+  deg_df = markers,
+  group_col = 'group',
+  fc_cutoff = 0.5 # log fold change cutoff for overlap analysis
+)
+
+
+
+
+
+
+
+overlap_df$group <- factor(
+  as.character(overlap_df$group), levels=
+  levels(seurat_obj$cell_identity)
+)
+
+
+
+# plot the results as a heatmap:
+maxval <- 50
+plot_df <- overlap_df
+plot_df$odds_ratio <- ifelse(plot_df$odds_ratio > maxval, maxval, plot_df$odds_ratio)
+plot_df$textcolor <- ifelse(plot_df$odds_ratio > 0.7*maxval, 'white', 'black')
+
+high_color = 'navy'
+p <- plot_df %>%
+  ggplot(aes(y=group, x=module, fill=odds_ratio)) +
+  geom_tile() +
+  geom_text(label=plot_df$Significance, vjust = 0.72, color=plot_df$textcolor) +
+  scale_fill_gradient(low='white', high=high_color) +
+  RotatedAxis() +
+  labs(fill = 'Odds ratio') +
+  theme(
+    panel.border = element_rect(fill=NA, color='black', size=1),
+    axis.line.x = element_blank(),
+    axis.line.y = element_blank(),
+    axis.title.x = element_blank(),
+    axis.title.y = element_blank(),
+    #axis.text.x = element_blank(),
+   # axis.ticks.x = element_blank(),
+  #  axis.text.y = element_blank(),
+  #  axis.ticks.y = element_blank(),
+    plot.margin=margin(0,0,0,0)
+  ) +
+  coord_equal()
+
+
+
+
+
+
+
+pdf(paste0(fig_dir, 'module_overlap_snRNA_DEGs.pdf'), width=9, height=9)
+ p 
+dev.off()
+
+
+
+
+
+```
+
+Overlap with known gene lists 
+
+```{r eval=FALSE}
+
+
+# Chen 2021 (compilation of multiple studies) - human orthologs of mouse genes
+homeostatic <- c("BIN1", "SIGLEC6", "CD33", "CSF1R",
+              "CST3", "CX3CR1", "HEXB", "JUN",
+              "MEF2A", "MS4A6A", "P2RY12", # "MS4A6E" error
+              "P2RY13", "SALL1", "SELPLG", "SERINC3",
+              "TGFBR1", "TMEM119")
+
+DAM <- c("APOE", "AXL", "B2M", # "CCL3L3",
+      "CCL3L1", "CCL3", "CCL18", "CCL23",
+      "CD63", # "CCL15-CCL14", "CCL15",
+      "CD9", "CLEC7A", "CSF1", "CST7",
+      "CTSB", "CTSD", "FTH1", "GPNMB",
+      "IGF1", "IRF8", "ITGAX", "LGALS3",
+      "LPL", "SPP1", "TIMP2", "TREM2",
+      "TYROBP", "CD68")
+
+IFN <- c("CD69", "CXCL10", "IFIT2", "IFIT3",
+      "IRF7", "ISG15", "USP41", "USP18",
+      "IFITM3", "STAT1")
+
+MHC <- c("CD74", "HLA-DQB2", "HLA-DQB1", "HLA-E",
+      "HLA-DMA", "HLA-A", "HLA-DRB1", "HLA-DRA",
+      "HLA-DPB1", "CD83", "CD81")
+
+Cyc_M <- c("BIRC5", "CENPE", "MCM5", "MKI67", "TOP2A")
+
+GFAP_low <- c("LUZP2", "SLC7A10", "MFGE8")
+GFAP_high <- c("GFAP", "ID3", "AQP4", "MYOC", "ID1", "FABP7")
+DAA <- c("GFAP", "CTSB", "VIM", "OSMR", "SERPINA3", "GSN")
+
+
+# Kenigsbuch et al 2022 - human orthologs of mouse genes
+DOL <- c("B2M", "C4B", "C4A", "CD63",
+      "CD9", "CLPTM1", "CTSB", "FABP5",
+      "GPD1", "GSTP1", "HLA-E", # "H3-3A",
+      "IL33", "KLK6", "LBH", "OPALIN",
+      "PLEKHA1", "RNASE4", "RPL26", "RPS2",
+      "SERPINA3", "SGK1", "STMN1")
+
+DOL_markers <- list("DOL" = DOL, 'NFOL'=c('TCF7L2', 'CASR', 'CEMIP2', 'ITPR2'),
+								  'MFOL'=c('MAL', 'MOG', 'PLP1', 'OPALIN', 'SERINC5', 'CTPS1'),
+								  'MOL'=c('KLK6', 'APOD', 'SLC5A11', 'PDE1A'))
+
+# load mouse <-> human gene name table:
+hg38_mm10_genes <- read.table(
+  "/dfs7/swaruplab/smorabit/resources/hg38_mm10_orthologs_2021.txt",
+  sep='\t',
+  header=TRUE
+)
+colnames(hg38_mm10_genes) <-c('hg38_id', 'mm10_id', 'mm10_name', 'hg38_name')
+hg38_mm10_genes <- dplyr::select(hg38_mm10_genes, c(hg38_name, mm10_name, hg38_id, mm10_id))
+
+hg38_mm10_genes <- subset(hg38_mm10_genes, mm10_name != '' & hg38_name != '')
+
+# need to make sure that there's only one entry for each gene in hg38_mm10_genes
+mm10_genes <- unique(hg38_mm10_genes$mm10_name)
+hg38_genes <- unique(hg38_mm10_genes$hg38_name)
+hg38_mm10_genes <- hg38_mm10_genes[match(mm10_genes, hg38_mm10_genes$mm10_name),]
+
+# Load PIGs from Chen et al 2020
+pig_table <- read.csv('~/swaruplab/smorabit/analysis/ADDS_2021/data/chen_modules.csv')
+
+# convert to human names
+ix <- match(pig_table$gene, hg38_mm10_genes$mm10_name)
+pig_table$gene_hg38 <- hg38_mm10_genes$hg38_name[ix]
+
+pigs <- subset(pig_table, module == 'PIG') %>% .$gene_hg38 %>% na.omit %>% as.character
+oligs <- subset(pig_table, module == 'OLIG') %>% .$gene_hg38 %>% na.omit %>% as.character
+
+
+gene_lists <- list("homeostatic" = homeostatic, "DAM" = DAM, "IFN" = IFN, "MHC" = MHC, "Cyc_M" = Cyc_M, 'PIGs' = pigs, 'OLIG' = oligs)
+gene_lists <- c(gene_lists, DOL_markers)
+
+
+amylo_degs <- read.csv('/dfs7/swaruplab/smorabit/analysis/ADDS_2021/visium/human/voyager/data/Amyloglo_Score_log_Gi_glm_GM_DEGs.csv')
+
+# upregulated genes :
+amylo_genes <- amylo_degs %>% subset(q_value < 0.05 & normalized_effect > 0) %>% .$gene
+amylo_genes <- amylo_genes[!grepl('MT-', amylo_genes)]
+
+gene_lists[['amylo']] <- amylo_genes
+
+
+
+
+
+modules <- GetModules(seurat_human)
+mods <- levels(modules$module); mods <- mods[mods != 'grey']
+genome.size <- nrow(seurat_human)
+
+# run overlaps between module gene lists and DEG lists:
+overlap_df <- do.call(rbind, lapply(mods, function(cur_mod){
+  cur_m1_genes <- modules %>% subset(module == cur_mod) %>% .$gene_name
+  cur_overlap_df <- do.call(rbind, lapply(names(gene_lists), function(cur_list){
+    print(paste0(cur_mod, ' ', cur_list))
+    cur_m2_genes <- gene_lists[[cur_list]]
+    cur_overlap <- testGeneOverlap(newGeneOverlap(
+        cur_m1_genes,
+        cur_m2_genes,
+        genome.size=genome.size
+    ))
+    c(cur_overlap@odds.ratio, cur_overlap@pval, cur_overlap@Jaccard, length(cur_overlap@intersection))
+  })) %>% as.data.frame
+  colnames(cur_overlap_df) <- c('odds_ratio', 'pval', 'Jaccard', 'size_intersection')
+  cur_overlap_df$module <- cur_mod
+  cur_overlap_df$gene_list <- names(gene_lists)
+
+  # module color:
+  #cur_overlap_df$color <- modules %>% subset(module == cur_mod) %>% .$color %>% unique
+  cur_overlap_df
+}))
+
+overlap_df$module <- factor(as.character(overlap_df$module), levels=mods)
+
+# re-order
+tmp <- unlist(lapply(names(gene_lists), function(cur_list){
+  cur <- subset(overlap_df, gene_list==cur_list)
+  which(cur$odds_ratio == max(cur$odds_ratio))
+}))
+
+overlap_df$gene_list <- factor(as.character(overlap_df$gene_list), levels=rev(names(gene_lists)[order(tmp)]))
+
+# adjust for multiple comparisons:
+overlap_df$fdr <- p.adjust(overlap_df$pval, method='fdr')
+
+# significance level:
+overlap_df$Significance <- gtools::stars.pval(overlap_df$fdr)
+overlap_df$Significance <- ifelse(
+  overlap_df$Significance == '.', '',
+  overlap_df$Significance
+)
+
+
+# plot the results as a heatmap:
+maxval <- 100
+plot_df <- overlap_df
+plot_df$odds_ratio <- ifelse(plot_df$odds_ratio > maxval, maxval, plot_df$odds_ratio)
+plot_df$textcolor <- ifelse(plot_df$odds_ratio > 0.7*maxval, 'white', 'black')
+
+
+p <- plot_df %>%
+  ggplot(aes(x=module, y=gene_list, fill=odds_ratio)) +
+  geom_tile() +
+  geom_text(label=plot_df$Significance, vjust = 0.72, color=plot_df$textcolor) +
+  scale_fill_gradient(low='white', high='blue') +
+  RotatedAxis() +
+  labs(fill = 'Odds ratio') +
+  theme(
+    panel.border = element_rect(fill=NA, color='black', linewidth=1),
+    axis.line.x = element_blank(),
+    axis.line.y = element_blank(),
+    axis.title.x = element_blank(),
+    axis.title.y = element_blank(),
+    #axis.text.x = element_blank(),
+    #axis.ticks.x = element_blank(),
+    #axis.text.y = element_blank(),
+    #axis.ticks.y = element_blank(),
+    plot.margin=margin(0,0,0,0)
+  ) +
+  coord_equal()
+
+pdf(paste0(fig_dir, cur_group, '_module_overlap_heatmap_disease.pdf'), width=9, height=6, useDingbats=FALSE)
+p
+dev.off()
+
+
+
+```
+
+
+
+
+
+
+Differential me 
+
+```{r eval=FALSE}
+
+groups <- levels(seurat_human$annotation)
+
+dx_list <- c('5xFAD_HEMI', '5xFAD_HEMI-BIN1HO', '5xFAD_HEMI-BIN1HO', '5xFAD_HEMI-BIN1HO', "BIN1HO")
+
+
+# loop through the different comparisons
+DMEs <- Reduce(rbind, lapply(groups, function(i){
+
+    # get list of cells with these genotypes
+    g1 <- seurat_human@meta.data %>% subset(annotation == i & Diagnosis == 'AD_DS') %>% rownames
+    g2 <- seurat_human@meta.data %>% subset(annotation == i & Diagnosis == 'Control') %>% rownames
+
+    # run the DME comparison with a wilcox test
+    DMEs <- FindDMEs(
+        seurat_human,
+        barcodes1 = g1,
+        barcodes2 = g2,
+        test.use='wilcox'
+    )
+    DMEs$ident.1 <- 'AD_DS'
+    DMEs$ident.2 <- 'Control'
+    DMEs$annotation <- i
+    DMEs
+}))
+
+```
+
+
+Module-trait correlation 
+
+```{r eval=FALSE}
+
+
+################################################################################
+# MT correlation
+################################################################################
+
+
+# only plot samples that have amyloid scores:
+amyloid_samples <- seurat_human@meta.data %>%
+  group_by(SAMPLE) %>%
+  summarise(Mean = mean(Amyloglo_Score_log)) %>%
+  filter(Mean != 0) %>% .$SAMPLE %>% as.character
+
+
+seurat_human$amyloid_sample <- seurat_human$SAMPLE %in% amyloid_samples
+
+# selected traits for MT correlation:
+seurat_human$Sex <- factor(as.character(seurat_human$Sex), levels=c('M', 'F'))
+traits <- c('Age', 'Sex', 'Diagnosis')
+
+
+# correlation in 5xFAD mice:
+
+seurat_human <- ModuleTraitCorrelation(
+  seurat_human,
+  traits = traits,
+  group.by = 'annotation',
+  subset_by = 'Condition',
+  subset_groups = '5X'
+)
+
+p <- PlotModuleTraitCorrelation(
+  seurat_human,
+  label = 'fdr',
+  label_symbol = 'stars',
+  text_size = 2,
+  text_digits = 2,
+  trait_text_size = 5,
+  text_color = 'black',
+  high_color = 'red',
+  mid_color = 'white',
+  low_color = 'blue',
+  plot_max = 0.5,
+  group_order = levels(seurat_human$annotation),
+  combine=TRUE
+)
+
+pdf(paste0(fig_dir, 'MT_correlation_5x.pdf'), width=5, height=10)
+p
+dev.off()
+
+
+
+```
+
+
+```{r eval=FALSE}
+
+
+to_pseudobulk = function(input, 
+                         meta = NULL, 
+                         replicate_col = 'replicate',
+                         cell_type_col = 'cell_type',
+                         label_col = 'label',
+                         min_cells = 3,
+                         min_reps = 2,
+                         min_features = 0,
+                         external = T) {
+  if (external) {
+    # first, make sure inputs are correct
+    inputs = check_inputs(
+      input, 
+      meta = meta,
+      replicate_col = replicate_col,
+      cell_type_col = cell_type_col,
+      label_col = label_col)
+    expr = inputs$expr
+    meta = inputs$meta
+  } else {
+    expr = input
+  }
+
+  # convert to characters
+  meta %<>% mutate(replicate = as.character(replicate),
+                   cell_type = as.character(cell_type),
+                   label = as.character(label))
+  
+  # keep only cell types with enough cells
+  keep = meta %>%
+    dplyr::count(cell_type, label) %>%
+    group_by(cell_type) %>%
+    filter(all(n >= min_cells)) %>%
+    pull(cell_type) %>%
+    unique()
+  
+  # process data into gene x replicate x cell_type matrices
+  pseudobulks = keep %>%
+    map( ~ {
+      print(.)
+      cell_type = .
+      meta0 = meta %>% filter(cell_type == !!cell_type)
+      expr0 = expr %>% magrittr::extract(, meta0$cell_barcode)
+      # catch cell types without replicates or conditions
+      if (n_distinct(meta0$label) < 2)
+        return(NA)
+      replicate_counts = distinct(meta0, label, replicate) %>%
+        group_by(label) %>%
+        summarise(replicates = n_distinct(replicate)) %>%
+        pull(replicates)
+      if (any(replicate_counts < min_reps))
+        return(NA)
+      
+      # process data into gene X replicate X cell_type matrice
+      mm = model.matrix(~ 0 + replicate:label, data = meta0)
+      mat_mm = expr0 %*% mm
+      keep_genes = rowSums(mat_mm > 0) >= min_features
+      mat_mm = mat_mm[keep_genes, ] %>% as.data.frame()
+      mat_mm %<>% as.data.frame()
+      colnames(mat_mm) = gsub("replicate|label", "", colnames(mat_mm))
+      # drop empty columns
+      keep_samples = colSums(mat_mm) > 0
+      mat_mm %<>% magrittr::extract(, keep_samples)
+      return(mat_mm)
+    }) %>%
+    setNames(keep)
+  
+  # drop NAs
+  pseudobulks %<>% magrittr::extract(!is.na(.))
+  
+  # also filter out cell types with no retained genes
+  min_dim = map(pseudobulks, as.data.frame) %>% map(nrow)
+  pseudobulks %<>% magrittr::extract(min_dim > 1)
+  
+  # also filter out types without replicates
+  min_repl = map_int(pseudobulks, ~ {
+    # make sure we have a data frame a not a vector
+    tmp = as.data.frame(.)
+    targets = data.frame(group_sample = colnames(tmp)) %>%
+      mutate(group = gsub(".*\\:", "", group_sample))
+    if (n_distinct(targets$group) == 1)
+      return(as.integer(0))
+    min(table(targets$group))
+  })
+  pseudobulks %<>% magrittr::extract(min_repl >= min_reps)
+  return(pseudobulks)
+}
+
+
+check_inputs = function(input,
+                        meta = meta,
+                        replicate_col = 'replicate',
+                        cell_type_col = 'cell_type',
+                        label_col = 'label') {
+
+  # extract cell types and label from metadata
+  if ("Seurat" %in% class(input)) {
+    # confirm Seurat is installed
+    if (!requireNamespace("Seurat", quietly = TRUE)) {
+      stop("install \"Seurat\" R package for Augur compatibility with ",
+           "input Seurat object", call. = FALSE)
+    }
+    meta = input@meta.data %>%
+      droplevels()
+    if (!is.null(replicate_col))
+      replicates = as.character(meta[[replicate_col]])
+    if (!is.factor(meta[[label_col]])) {
+      labels = meta[[label_col]]
+    } else {
+      labels = as.character(meta[[label_col]])
+    }
+    cell_types = as.character(meta[[cell_type_col]])
+    expr = Seurat::GetAssayData(input, slot = 'counts')
+  } else if ("cell_data_set" %in% class(input)) {
+    # confirm monocle3 is installed
+    if (!requireNamespace("monocle3", quietly = TRUE)) {
+      stop("install \"monocle3\" R package for Augur compatibility with ",
+           "input monocle3 object", call. = FALSE)
+    }
+    meta = monocle3::pData(input) %>%
+      droplevels() %>%
+      as.data.frame()
+    if (!is.null(replicate_col))
+      replicates = as.character(meta[[replicate_col]])
+    if (!is.factor(meta[[label_col]])) {
+      labels = meta[[label_col]]
+    } else {
+      labels = as.character(meta[[label_col]])
+    }
+    cell_types = as.character(meta[[cell_type_col]])
+    expr = monocle3::exprs(input)
+  } else if ("SingleCellExperiment" %in% class(input)){
+    # confirm SingleCellExperiment is installed
+    if (!requireNamespace("SingleCellExperiment", quietly = TRUE)) {
+      stop("install \"SingleCellExperiment\" R package for Augur ",
+           "compatibility with input SingleCellExperiment object",
+           call. = FALSE)
+    }
+    meta = SummarizedExperiment::colData(input) %>%
+      droplevels() %>%
+      as.data.frame()
+    if (!is.null(replicate_col))
+      replicates = as.character(meta[[replicate_col]])
+    if (!is.factor(meta[[label_col]])) {
+      labels = meta[[label_col]]
+    } else {
+      labels = as.character(meta[[label_col]])
+    }
+    cell_types = as.character(meta[[cell_type_col]])
+    expr = SummarizedExperiment::assay(input)
+  } else {
+    # check if input is sparse matrix or numberic matrix/df
+    valid_input = is(input, 'sparseMatrix') ||
+      is_numeric_matrix(input) ||
+      is_numeric_dataframe(input)
+    if (!valid_input)
+      stop("input must be Seurat, monocle, sparse matrix, numeric matrix, or ",
+           "numeric data frame")
+    if (is.null(meta))
+      stop("input matrix must be accompanied by a metadata table")
+    expr = input
+    if (!is.null(replicate_col))
+      replicates = as.character(meta[[replicate_col]])
+    labels = as.character(meta[[label_col]])
+    cell_types = as.character(meta[[cell_type_col]])
+  }
+  
+  # check dimensions are non-zero
+  if (length(dim(expr)) != 2 || !all(dim(expr) > 0)) {
+    stop("expression matrix has at least one dimension of size zero")
+  }
+
+  # check dimensions match
+  n_cells1 = nrow(meta)
+  n_cells2 = ncol(expr)
+  if (n_cells1 != n_cells2) {
+    stop("number of cells in metadata (", n_cells1, ") does not match number ",
+         "of cells in expression (", n_cells2, ")")
+  }
+
+  # check at least two labels
+  if (n_distinct(labels) == 1) {
+    stop("only one label provided: ", unique(labels))
+  }
+
+  # check for missing labels or cell types
+  if (any(is.na(labels))) {
+    stop("labels contain ", sum(is.na(labels)), "missing values")
+  }
+  if (any(is.na(cell_types))) {
+    stop("cell types contain ", sum(is.na(cell_types)), "missing values")
+  }
+  if (!is.null(replicate_col) && any(is.na(replicates))) {
+    stop("replicates contain ", sum(is.na(replicates)), "missing values")
+  }
+
+  # check for missing replicates
+  if (!is.null(replicate_col) && is.null(replicates)) {
+    stop("metadata does not contain replicate information")
+  }
+
+  # remove missing values
+  missing = is.na(expr)
+  if (any(missing)) {
+    stop("matrix contains ", sum(missing), "missing values")
+  }
+  
+  # clean up the meta data
+  if (!is.null(replicate_col)) {
+    meta %<>% as.data.frame() %>%
+      mutate(cell_barcode = rownames(meta),
+             replicate = meta[[replicate_col]],
+             cell_type = meta[[cell_type_col]],
+             label = meta[[label_col]]) %>%
+      mutate_at(vars(replicate, cell_type, label), as.factor)
+  } else {
+    meta %<>% as.data.frame() %>%
+      mutate(cell_barcode = rownames(meta),
+             cell_type = meta[[cell_type_col]],
+             label = meta[[label_col]]) %>%
+      mutate_at(vars(cell_type, label), as.factor)
+  }
+
+  # make sure meta contains row names and is a data frame
+  rownames(meta) = colnames(expr)
+  meta = as.data.frame(meta)
+  to_return = list(
+    expr = expr,
+    meta = meta
+  )
+  return(to_return)
+}
+
+```
+
+
+Overlap with snRNA marker genes 
+
+```{r eval=FALSE}
+
+# load cluster markers
+markers <- read.csv(paste0('/dfs7/swaruplab/smorabit/analysis/ADDS_2021/splitseq/integration/DEGs/combined/cluster_markers.csv'))
+group_levels <- levels(seurat_obj$cell_identity)
+markers$group <- factor(as.character(markers$group), levels=group_levels)
+markers <- markers[!grepl('MT-', markers$gene),]
+
+# compute marker gene overlaps
+library(GeneOverlap)
+overlap_df <- OverlapModulesDEGs(
+  seurat_human,
+  deg_df = markers,
+  group_col = 'group',
+  fc_cutoff = 0.5 # log fold change cutoff for overlap analysis
+)
+
+overlap_df$group <- factor(
+  as.character(overlap_df$group), levels=
+  levels(seurat_obj$cell_identity)
+)
+
+# plot the results as a heatmap:
+maxval <- 50
+plot_df <- overlap_df
+plot_df$odds_ratio <- ifelse(plot_df$odds_ratio > maxval, maxval, plot_df$odds_ratio)
+plot_df$textcolor <- ifelse(plot_df$odds_ratio > 0.7*maxval, 'white', 'black')
+
+high_color = 'navy'
+p <- plot_df %>%
+  ggplot(aes(y=group, x=module, fill=odds_ratio)) +
+  geom_tile() +
+  geom_text(label=plot_df$Significance, vjust = 0.72, color=plot_df$textcolor) +
+  scale_fill_gradient(low='white', high=high_color) +
+  RotatedAxis() +
+  labs(fill = 'Odds ratio') +
+  theme(
+    panel.border = element_rect(fill=NA, color='black', size=1),
+    axis.line.x = element_blank(),
+    axis.line.y = element_blank(),
+    axis.title.x = element_blank(),
+    axis.title.y = element_blank(),
+    #axis.text.x = element_blank(),
+   # axis.ticks.x = element_blank(),
+  #  axis.text.y = element_blank(),
+  #  axis.ticks.y = element_blank(),
+    plot.margin=margin(0,0,0,0)
+  ) +
+  coord_equal()
+
+
+
+
+
+
+
+pdf(paste0(fig_dir, cur_group, '_module_overlap_snRNA_DEGs.pdf'), width=9, height=9)
+ p 
+dev.off()
+
+
+
+
+
+```
+
+
+
+Enrichment analysis
+
+```{r eval=FALSE}
+
+library(enrichR)
+
+dbs <-c('GO_Biological_Process_2021','GO_Cellular_Component_2021','GO_Molecular_Function_2021','WikiPathway_2021_Human', 'KEGG_2021_Human')
+
+# compute GO terms:
+seurat_human <- RunEnrichr(seurat_human, dbs=dbs, max_genes=Inf)
+
+# inspect the enrichr table:
+enrichr_df <- GetEnrichrTable(seurat_human) %>% subset(P.value < 0.05)
+enrichr_df$ngenes <- unlist(lapply(strsplit(enrichr_df$Genes, ';'), function(x){length(x)}))
+enrichr_df <- subset(enrichr_df, ngenes >= 3)
+
+write.table(enrichr_df, quote=FALSE, row.names=FALSE, sep='\t', file=paste0(data_dir, cur_group, '_human_vis_enrichr.tsv'))
+
+```
+

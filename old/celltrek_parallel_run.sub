@@ -1,0 +1,35 @@
+#!/bin/bash
+#SBATCH --job-name=CellTrek
+#SBATCH -p standard
+#SBATCH -A vswarup_lab
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=1
+#SBATCH --error=slurm-%J.err
+#SBATCH --mem 96G
+#SBATCH --array=1-1873
+#SBATCH --time=4:00:00
+
+source ~/.bashrc
+conda activate cicero
+
+# seurat object path:
+seurat_vis='/dfs7/swaruplab/smorabit/analysis/ADDS_2021/visium/human/data/ADDS_seurat_processed.rds'
+seurat_sc="/dfs7/swaruplab/smorabit/analysis/ADDS_2021/splitseq/integration/data/ADDS_integrated_FCX.rds"
+outdir="/dfs7/swaruplab/smorabit/analysis/ADDS_2021/splitseq/integration/spatial_mapping/data/"
+vis_sample_col="Sample"
+sc_sample_col="Sample"
+cell_id_col='cell_identity'
+niter=3
+
+# launch R script:
+Rscript --vanilla /dfs7/swaruplab/smorabit/analysis/ADDS_2021/bin/celltrek_parallel.R \
+    --invis $seurat_vis \
+    --insc $seurat_sc \
+    --outdir $outdir \
+    --index $SLURM_ARRAY_TASK_ID \
+    --vis-sample-col $vis_sample_col \
+    --sc-sample-col $sc_sample_col \
+    --cell-id-col $cell_id_col \
+    --iterations $niter \
+    --overwrite "TRUE"

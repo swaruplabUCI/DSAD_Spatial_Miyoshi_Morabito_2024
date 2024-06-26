@@ -1,0 +1,534 @@
+
+Load the required libraries and the Seurat dataset
+
+```{r eval=FALSE}
+
+library(Seurat)
+library(miloR)
+library(SingleCellExperiment)
+library(scater)
+library(scran)
+library(tidyverse)
+library(cowplot)
+library(patchwork)
+library(ggrepel)
+library(viridis)
+library(magrittr)
+theme_set(theme_cowplot())
+
+setwd("/dfs7/swaruplab/smorabit/analysis/ADDS_2021/splitseq/integration/milo/")
+
+
+fig_dir <- 'figures/'
+data_dir <- 'data/'
+
+# load ADDS + AD integrated single-cell dataset:
+seurat_obj <- readRDS(file="/dfs7/swaruplab/smorabit/analysis/ADDS_2021/splitseq/integration/data/ADDS_AD_integrated.rds" )
+
+# add new column to collapse VASC clusters 
+seurat_obj$cell_group <- ifelse(
+    seurat_obj$cell_type %in% c('FBR', 'PER', 'SMC', 'END'),
+    'VASC', seurat_obj$cell_type
+)
+seurat_obj$cell_group <- factor(
+    as.character(seurat_obj$cell_group),
+    levels = c('EX', 'INH', 'ODC', 'OPC', 'MG', 'ASC', 'VASC')
+)
+
+dx_cp <- c("Control" = "#B8DBC5", "Early-AD" = "#E7BDE1" , "AD" = "#CF8BA3", "DSAD" = "#9E6D7F")
+
+
+subset(seurat_obj@meta.data, cell_type == 'INH') %>% .$cell_identity %>% droplevels %>% table 
+subset(seurat_obj@meta.data, cell_group == 'INH') %>% .$cell_identity %>% droplevels %>% table 
+
+#--------------------------------------------------------------------#
+# Important meta-data variables
+#--------------------------------------------------------------------#
+
+# this seurat object contains data from our new AD/DS project and 3 other 
+# studies. 
+table(seurat_obj$Study)
+
+# variable denoting the individual of origin 
+table(seurat_obj$Sample)
+
+# our AD/DS dataset has two different brain regions (frontal cortex, FCX
+# and posterior cingulate cortex, PCC). 
+table(seurat_obj$Tissue)
+
+# annotated clusters 
+table(seurat_obj$annotation)
+
+# major cell type 
+table(seurat_obj$cell_type)
+
+# disease status 
+# our new dataset has control and AD/DS
+# Mathys et al has control, early-ad, and late AD (AD)
+# other two studies have control and late AD
+table(seurat_obj$Diagnosis)
+
+```
+
+We are trying to use MiloR to perform differential cell type composition analysis 
+in order to respond to Reviewer 2's comment:
+
+"Figure 1e – There seems to be no difference in coarse cluster structure of 
+the snRNA-Seq data between control and AD, does higher resolution clustering 
+show further differences?"
+
+The Reviewer is (incorrectly) trying to infer differences in cell type composition 
+between control and AD based on the UMAP plot, which is not possible. I think they 
+don't really care about the UMAP itself rather than are interested in understanding 
+if there are any significant changes in cell type / cluster proportions in diseae. 
+We can address this point using MiloR.
+
+MiloR can perform diffferential cell type composition analysis comparing two 
+conditions. Since our dataset has 4 conditions (control, AD/DS, early-AD, 
+and late-AD) and four datasets, and two brain regions, we will need to run separate 
+MiloR analyses for the following groups.
+
+* Current dataset, control vs AD/DS in FCX region 
+* Current dataset, control vs AD/DS in PCC region 
+* Mathys et al, control vs early AD 
+* Mathys et al, control vs late AD 
+* Morabito & Miyoshi et al, control vs AD 
+* Zhou et al, control vs AD 
+
+For this analysis we should use the "annotaiton" meta-data column for the cluster groups.
+
+I suggest following this notebook written by the MiloR authors:
+https://rawcdn.githack.com/MarioniLab/miloR/7c7f906b94a73e62e36e095ddb3e3567b414144e/vignettes/milo_gastrulation.html#1_Load_data
+
+I would ultimately like to have the "Beeswarm" plots that are shown in this notebook
+as the main result of this analysis (Controls should correspond to negative log fold 
+change). 
+
+In the next block I will subset the Seurat object for the AD/DS and FCX analysis 
+and convert it to the right format for MiloR.
+
+```{r eval=FALSE}
+
+# subset the seurat object 
+cur_seurat <- subset(seurat_obj, Study == 'ADDS' & Tissue == 'FCX')
+
+# not run yet: subset for the mathys et al early AD vs Control
+#cur_seurat <- subset(seurat_obj, Study == 'Mathys_2019' & Diagnosis %in% c("Control", 'Early-AD'))
+
+# convert the dataset to singlecellexperiment:
+sce <- as.SingleCellExperiment(cur_seurat)
+
+# convert from SCE to milo object
+milo_obj <- Milo(sce)
+
+# compute knn
+# for all purposes downstream where applicable use SCVI as the reduced dim
+milo_obj <- buildGraph(milo_obj, k = 30, d = 30, reduced.dim = "SCANVI")
+
+
+# continue the rest of the MiloR pipeline...
+
+
+```
+
+Plotting with one of Sai's outputs 
+
+```{r eval=FALSE}
+
+milo_dir <- '/dfs7/swaruplab/smorabit/analysis/ADDS_2021/splitseq/integration/milo/miloR_result/'
+milo_outputs <- dir(milo_dir)
+
+cur_milo_file <- milo_outputs[1]
+
+
+for(cur_milo_file in milo_outputs){
+    print(cur_milo_file)
+
+    milo_obj <- readRDS(paste0(milo_dir, cur_milo_file, '/milo_obj.rds'))
+
+    milo_obj$cell_group <- ifelse(
+        milo_obj$cell_type %in% c('FBR', 'PER', 'SMC', 'END'),
+        'VASC', milo_obj$cell_type
+    )
+    milo_obj$cell_group <- factor(
+        as.character(milo_obj$cell_group),
+        levels = c('EX', 'INH', 'ODC', 'OPC', 'MG', 'ASC', 'VASC')
+    )
+
+    # get the conditions
+    conditions <- unique(as.character(milo_obj$Diagnosis))
+    dx_condition <- conditions[conditions != 'Control']
+
+    # change factor levels:
+    milo_obj$Diagnosis <- factor(
+        as.character(milo_obj$Diagnosis),
+        levels = c('Control', dx_condition)
+    )
+
+    # make the design table
+    design_df <- data.frame(colData(milo_obj))[,c("Sample", "Diagnosis")] %>% distinct()
+    rownames(design_df) <- design_df$Sample
+
+    # run the differential abundance test
+    da_results <- testNhoods(
+        milo_obj, design = ~ Diagnosis, 
+        design.df = design_df,
+        reduced.dim = "SCANVI"
+    )
+
+    # add neighborhood annotations
+    da_results <- annotateNhoods(milo_obj, da_results, coldata_col = "cell_identity")
+    da_results <- annotateNhoods(milo_obj, da_results, coldata_col = "cell_group")
+    head(da_results)
+
+    da_results$cell_group <- ifelse(da_results$cell_group_fraction < 0.7, "Mixed", da_results$cell_group)
+    da_results$cell_identity <- ifelse(da_results$cell_group_fraction < 0.7, "Mixed", da_results$cell_identity)
+
+    # remove the NA results:
+    da_results %<>% subset(!is.na(cell_identity))
+
+    write.csv(da_results, file=paste0(data_dir, 'milo_da_results_', cur_milo_file,'.csv'))
+
+    #-------------------------------------------------------#
+    # Making the beeswarm plot
+    #-------------------------------------------------------#
+
+    library(ggbeeswarm)
+
+    # order them by major cell type and then by average log2FC
+    groups <- rev(levels(seurat_obj$cell_group))
+    df <- data.frame()
+    plot_df <- do.call(rbind, lapply(groups, function(cur_group){
+        subset(da_results, cell_group == cur_group) %>%
+            group_by(cell_identity) %>%
+            summarise(mean=median(logFC)) %>%
+            arrange(mean)
+    }))
+    plot_df$cell_identity <- factor(
+        as.character(plot_df$cell_identity),
+        levels =  as.character(plot_df$cell_identity)
+    )
+
+    da_results$cell_identity <- factor(
+        as.character(da_results$cell_identity),
+        levels =  as.character(plot_df$cell_identity)
+    )
+
+      # remove the NA results:
+    da_results %<>% subset(!is.na(cell_identity))
+
+    length(unique(da_results$cell_identity))
+
+    da_signif <- subset(da_results, FDR < 0.05)
+
+    # max range of the plot 
+    plot_range <- max(abs(da_results$logFC)) + 0.1
+
+    p <- da_results %>%
+    ggplot(aes(x = logFC, y = cell_identity)) +
+    # geom_vline(xintercept=0, linetype='dashed', color='black') + 
+    ggrastr::rasterise(geom_quasirandom(
+        method = "pseudorandom",
+        color = 'lightgrey'
+        ), dpi=200) + 
+    ggrastr::rasterise(geom_quasirandom(
+        data = da_signif,
+        aes(color = logFC),
+        method = "pseudorandom"
+        ), dpi=200) + 
+    geom_boxplot(fill=NA, outlier.shape=NA) + 
+    scale_color_gradient2() +
+    xlim(-plot_range, plot_range) + 
+    scale_color_gradient2(high=dx_cp[dx_condition], mid='lightgrey', low=dx_cp['Control'], midpoint=0) +
+    ylab('') + 
+    theme(
+        axis.line.x = element_blank(),
+        axis.line.y = element_blank(),
+        axis.text.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        panel.border = element_rect(size=1,color='black', fill=NA),
+        panel.grid.major.x = element_line(size-0.5, color='grey'),
+        plot.margin=margin(0,0,0,0)
+    )
+
+    # make a color bar
+    color_df <- read.csv(file='/dfs7/swaruplab/smorabit/analysis/ADDS_2021/splitseq/integration/data/cell_identity.csv')
+    color_df <- subset(color_df, group %in% da_results$cell_identity)
+    color_df$group <- factor(
+    as.character(color_df$group),
+    levels = levels(da_results$cell_identity)
+    )
+    color_df %<>% arrange(group)
+
+    colorbar <- color_df %>%
+        ggplot(aes(y=group, x=1, fill=group)) +
+        geom_tile() +
+        scale_fill_manual(values=color_df$colour) +
+        NoLegend() +
+        theme(
+            plot.title=element_blank(),
+            axis.line=element_blank(),
+            axis.ticks.x=element_blank(),
+            axis.text.x = element_blank(),
+            axis.title = element_blank(),
+            plot.margin=margin(0,0,0,0)
+        ) 
+    
+    patch <- colorbar + p + plot_layout(widths=c(1, 10))
+
+    pdf(paste0(fig_dir, 'beeswarm_', cur_milo_file, '.pdf'), width=5, height=9)
+    print(patch)
+    dev.off()
+}
+
+
+```
+
+Milo + Celltrek
+
+```{r eval=FALSE}
+
+
+milo_dir <- '/dfs7/swaruplab/smorabit/analysis/ADDS_2021/splitseq/integration/milo/miloR_result/'
+milo_outputs <- dir(milo_dir)
+
+cur_milo_file <- milo_outputs[1]
+
+
+milo_obj <- readRDS(paste0(milo_dir, cur_milo_file, '/milo_obj.rds'))
+
+#milo_obj <- milo_obj[,milo_obj$bc %in% seurat_obj_celltrek$bc]
+
+ix <- match(as.character(milo_obj$bc), as.character(seurat_obj_celltrek$bc))
+length(ix)
+
+all.equal(as.character(milo_obj$bc), as.character(seurat_obj_celltrek$bc[ix]))
+
+milo_obj$cellchat_anno <- seurat_obj_celltrek$cellchat_anno[ix]
+
+sum(is.na(milo_obj$cellchat_anno))
+milo_obj$cellchat_anno <- ifelse(is.na(milo_obj$cellchat_anno), 'unmapped', milo_obj$cellchat_anno)
+
+milo_obj$cell_group <- ifelse(
+    milo_obj$cell_type %in% c('FBR', 'PER', 'SMC', 'END'),
+    'VASC', milo_obj$cell_type
+)
+milo_obj$cell_group <- factor(
+    as.character(milo_obj$cell_group),
+    levels = c('EX', 'INH', 'ODC', 'OPC', 'MG', 'ASC', 'VASC')
+)
+
+subset(colData(milo_obj), cell_group == 'INH') %>% .$cellchat_anno %>% table
+
+# get the conditions
+conditions <- unique(as.character(milo_obj$Diagnosis))
+dx_condition <- conditions[conditions != 'Control']
+
+# change factor levels:
+milo_obj$Diagnosis <- factor(
+    as.character(milo_obj$Diagnosis),
+    levels = c('Control', dx_condition)
+)
+
+# make the design table
+design_df <- data.frame(colData(milo_obj))[,c("Sample", "Diagnosis")] %>% distinct()
+rownames(design_df) <- design_df$Sample
+
+# run the differential abundance test
+da_results <- testNhoods(
+    milo_obj, design = ~ Diagnosis, 
+    design.df = design_df,
+    reduced.dim = "SCANVI"
+)
+
+
+# add neighborhood annotations
+da_results <- annotateNhoods(milo_obj, da_results, coldata_col = "cellchat_anno")
+da_results <- annotateNhoods(milo_obj, da_results, coldata_col = "cell_group")
+head(da_results)
+
+length(unique(da_results$cellchat_anno))
+
+
+da_results$cell_group <- ifelse(da_results$cell_group_fraction < 0.7, "Mixed", da_results$cell_group)
+da_results$cellchat_anno <- ifelse(da_results$cell_group_fraction < 0.7, "Mixed", da_results$cellchat_anno)
+
+subset(da_results, cell_group == 'INH') %>% .$cellchat_anno %>% table
+
+# remove the NA results:
+da_results %<>% subset(!is.na(cellchat_anno))
+
+write.csv(da_results, file=paste0(data_dir, 'milo_da_results_celltrek_anno.csv'))
+
+da_results <- read.csv(file=paste0(data_dir, 'milo_da_results_celltrek_anno.csv'))
+
+
+#-------------------------------------------------------#
+# Making the beeswarm plot
+#-------------------------------------------------------#
+
+# note: some of the very small groups are missing from this analysis
+
+groups_exclude <- c(names(which(table(da_results$cellchat_anno) < 10)), 'Mixed', 'unmapped')
+da_results <- subset(da_results, ! cellchat_anno %in% groups_exclude)
+
+length(unique(da_results$cellchat_anno))
+length(unique(milo_obj$cellchat_anno))
+length(unique(seurat_obj$cellchat_anno))
+
+subset(seurat_obj@meta.data, cell_type == 'ASC') %>% .$cellchat_anno %>% table
+subset(seurat_obj@meta.data, cell_type == 'MG') %>% .$cellchat_anno %>% table
+
+library(ggbeeswarm)
+
+# order them by major cell type and then by average log2FC
+groups <- rev(levels(seurat_obj$cell_group))
+df <- data.frame()
+plot_df <- do.call(rbind, lapply(groups, function(cur_group){
+    good_groups <- subset(seurat_obj@meta.data, cell_group == cur_group) %>% .$cellchat_anno %>% unique
+    subset(da_results, cellchat_anno %in% good_groups) %>%
+        group_by(cellchat_anno) %>%
+        summarise(mean=median(logFC)) %>%
+        arrange(mean)
+}))
+plot_df$cellchat_anno <- factor(
+    as.character(plot_df$cellchat_anno),
+    levels =  unique(as.character(plot_df$cellchat_anno))
+)
+
+da_results$cellchat_anno <- factor(
+    as.character(da_results$cellchat_anno),
+    levels =  unique(as.character(plot_df$cellchat_anno))
+)
+
+    # remove the NA results:
+da_results %<>% subset(!is.na(cellchat_anno))
+
+
+da_signif <- subset(da_results, FDR < 0.05)
+
+# max range of the plot 
+plot_range <- max(abs(da_results$logFC)) + 0.1
+
+p <- da_results %>%
+ggplot(aes(x = logFC, y = cellchat_anno)) +
+# geom_vline(xintercept=0, linetype='dashed', color='black') + 
+ggrastr::rasterise(geom_quasirandom(
+    method = "pseudorandom",
+    color = 'lightgrey'
+    ), dpi=800) + 
+ggrastr::rasterise(geom_quasirandom(
+    data = da_signif,
+    aes(color = logFC),
+    method = "pseudorandom"
+    ), dpi=800) + 
+geom_boxplot(fill=NA, outlier.shape=NA) + 
+scale_color_gradient2() +
+xlim(-plot_range, plot_range) + 
+scale_color_gradient2(high=dx_cp[dx_condition], mid='lightgrey', low=dx_cp['Control'], midpoint=0) +
+ylab('') + 
+theme(
+    axis.line.x = element_blank(),
+    axis.line.y = element_blank(),
+    panel.border = element_rect(size=1,color='black', fill=NA),
+    panel.grid.major.x = element_line(size-0.5, color='grey'),
+    plot.margin=margin(0,0,0,0)
+)
+
+pdf(paste0(fig_dir, 'beeswarm_celltrek2.pdf'), width=4, height=7)
+print(p)
+dev.off()
+
+
+subset(seurat_obj_celltrek@meta.data, cell_type == 'ASC') %>% .$cellchat_anno %>% table
+
+
+
+```
+
+
+Run MiloR again but on the spatial annotations 
+
+```{r eval=FALSE}
+
+seurat_obj_celltrek <- readRDS(file='/dfs7/swaruplab/smorabit/analysis/ADDS_2021/splitseq/integration/data/ADDS_for_cellchat.rds')
+seurat_obj <- seurat_obj_celltrek
+
+
+# add new column to collapse VASC clusters 
+seurat_obj$cell_group <- ifelse(
+    seurat_obj$cell_type %in% c('FBR', 'PER', 'SMC', 'END'),
+    'VASC', seurat_obj$cell_type
+)
+seurat_obj$cell_group <- factor(
+    as.character(seurat_obj$cell_group),
+    levels = c('EX', 'INH', 'ODC', 'OPC', 'MG', 'ASC', 'VASC')
+)
+
+head(milo_obj$bc)
+head(seurat_obj_celltrek$bc)
+
+
+# convert the dataset to singlecellexperiment:
+sce <- as.SingleCellExperiment(seurat_obj)
+
+# convert from SCE to milo object
+milo_obj <- Milo(sce)
+
+# compute knn
+# for all purposes downstream where applicable use SCVI as the reduced dim
+milo_obj <- buildGraph(milo_obj, k = 30, d = 30, reduced.dim = "SCVI")
+
+# defining neighborhoods
+milo_obj <- makeNhoods(milo_obj, prop = 0.1, k = 30, d=30, refined = TRUE, reduced_dims = "SCVI")
+
+# count cells in each neighborhood 
+milo_obj <- countCells(
+    milo_obj, 
+    meta.data = as.data.frame(colData(milo_obj)), 
+    sample="Sample"
+)
+
+
+
+# from above, need to modify to work for this data
+
+
+# get the conditions
+conditions <- unique(as.character(milo_obj$Diagnosis))
+dx_condition <- conditions[conditions != 'Control']
+
+# change factor levels:
+milo_obj$Diagnosis <- factor(
+    as.character(milo_obj$Diagnosis),
+    levels = c('Control', dx_condition)
+)
+
+# make the design table
+design_df <- data.frame(colData(milo_obj))[,c("Sample", "Diagnosis")] %>% distinct()
+rownames(design_df) <- design_df$Sample
+
+# run the differential abundance test
+da_results <- testNhoods(
+    milo_obj, design = ~ Diagnosis, 
+    design.df = design_df,
+    reduced.dim = "SCVI"
+)
+
+# add neighborhood annotations
+da_results <- annotateNhoods(milo_obj, da_results, coldata_col = "cellchat_anno")
+da_results <- annotateNhoods(milo_obj, da_results, coldata_col = "cell_group")
+head(da_results)
+
+da_results$cell_group <- ifelse(da_results$cell_group_fraction < 0.7, "Mixed", da_results$cell_group)
+da_results$cell_identity <- ifelse(da_results$cell_group_fraction < 0.7, "Mixed", da_results$cell_identity)
+
+# remove the NA results:
+da_results %<>% subset(!is.na(cell_identity))
+
+write.csv(da_results, file=paste0(data_dir, 'milo_da_results_', cur_milo_file,'.csv'))
+
+
+
+
+```

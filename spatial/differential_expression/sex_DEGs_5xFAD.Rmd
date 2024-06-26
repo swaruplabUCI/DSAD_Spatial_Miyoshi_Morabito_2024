@@ -1,0 +1,240 @@
+
+```{r eval=FALSE}
+
+# conda activate voyager
+library(Seurat)
+library(tidyverse)
+library(cowplot)
+library(patchwork)
+library(RColorBrewer)
+library(Voyager)
+library(UCell)
+library(ggrastr)
+library(ggrepel)
+library(viridis)
+library(Voyager)
+library(SpatialFeatureExperiment)
+library(scater)
+library(scran)
+library(SFEData)
+library(sf)
+library(ggplot2)
+library(scales)
+library(patchwork)
+library(BiocParallel)
+library(bluster)
+library(tidyverse)
+library(ggpubr)
+source('/dfs7/swaruplab/smorabit/analysis/scWGCNA/bin/spatial_functions.R')
+
+#detach("package:hdWGCNA", unload=TRUE)
+#devtools::install_github('smorabit/hdWGCNA', ref='dev')
+library(hdWGCNA)
+
+
+colfunc <- colorRampPalette(rev(brewer.pal(11, 'Spectral' )))
+theme_set(theme_cowplot())
+
+setwd("/dfs7/swaruplab/smorabit/analysis/ADDS_2021/visium/5xFAD/DEGs/")
+
+fig_dir <- "figures/"
+data_dir <- "data/"
+
+
+# 5x data:
+seurat_5x <- readRDS('/dfs7/swaruplab/emiyoshi/Visium_5X/5XFAD_seurat_processed_annotated.rds')
+
+seurat_5x$Age <- factor(
+  as.character(seurat_5x$Age),
+  levels = c("4mo", "6mo", "8mo", "12mo")
+)
+
+mouse_cp <- c(
+      "ctx-deep-layers" = "#5b4468", "ctx-upper-layers" = "#9581a4", "ctx-olfactory" = "#8073ab",
+      "hippocampus" = "#d6a5b2", "hippocampus-pyramidal" = "#e193aa",
+      "lateral-ventricle" = "#d2c3b2",
+      "striatum" = "#F0DE8C",
+      "thalamus1" = "#00CBA7", "thalamus2" = "#abcc94",
+      "hypothalamus-amygdala" = "#72c9b1",
+      "WM1" = "#325ea8", "WM2" = "#64bcdb", "WM-cerebral-peduncle" = "#62a7d7",
+      "erythrocytes-neurons" = "#d07fc4", "unknown" = "#c47c4d"
+    )
+
+
+# set factor levels for mouse clusters
+seurat_5x$annotation <- factor(
+  as.character(seurat_5x$annotation),
+  levels = names(mouse_cp)
+)
+
+cp_5x <- c("4mo" = "#E8C0FC", "6mo" = "#B57DD1",
+        "8mo"= "#8C64A1", "12mo" = "#643D78")
+
+
+
+# how 
+tmp <- subset(seurat_5x@meta.data, Condition == '5X') %>% 
+    dplyr::select(c(SAMPLE, Age, Sex)) %>% 
+    distinct
+table(tmp$Age, tmp$Sex)
+
+```
+
+Testing one run of MAST with the covariates
+
+* test 8 months and 12 months so we can see if there is a clear bias from 
+having 2 more F samples in the 12 month
+
+```{r eval=FALSE}
+
+cur_seurat <- subset(seurat_5x, annotation == 'ctx-upper-layers' & Age == '8mo')
+# cur_seurat <- subset(seurat_5x, annotation == 'ctx-upper-layers' & Age == '12mo')
+
+Idents(cur_seurat) <- cur_seurat$Sex
+ident.1 <- 'F'
+ident.2 <- 'M'
+slot = 'data'
+assay = 'Spatial'
+test.use = 'MAST'
+min.pct = 0 
+logfc.threshold = 0
+only.pos = FALSE 
+#latent.vars = c('nCount_Spatial', 'seqbatch', 'LibraryDay1', 'Sack.date')
+latent.vars = c('nCount_Spatial', 'seqbatch')
+
+markers <- FindMarkers(
+    cur_seurat,
+    ident.1 = ident.1,
+    ident.2 = ident.2,
+    slot = slot,
+    assay = assay,
+    test.use = test.use,
+    min.pct = min.pct,
+    logfc.threshold = logfc.threshold,
+    only.pos = only.pos,
+    latent.vars = latent.vars
+)
+
+markers_8mo <- markers
+markers_8mo$gene <- rownames(markers_8mo)
+markers_8mo$Age <- '8mo'
+
+cur_seurat <- subset(seurat_5x, annotation == 'ctx-upper-layers' & Age == '12mo')
+Idents(cur_seurat) <- cur_seurat$Sex
+
+markers_12mo <- FindMarkers(
+    cur_seurat,
+    ident.1 = ident.1,
+    ident.2 = ident.2,
+    slot = slot,
+    assay = assay,
+    test.use = test.use,
+    min.pct = min.pct,
+    logfc.threshold = logfc.threshold,
+    only.pos = only.pos,
+    latent.vars = latent.vars
+)
+markers_12mo$gene <- rownames(markers_12mo)
+markers_12mo$Age <- '12mo'
+
+markers <- rbind(markers_12mo, markers_8mo)
+write.csv(markers, file=paste0(data_dir, 'sex_DEGs_test2.csv'), quote=FALSE, row.names=FALSE)
+
+################################################################
+# Volcano ?
+################################################################
+
+degs <- read.csv(file=paste0(data_dir, 'sex_DEGs_test2.csv'))
+
+
+# exclude MT genes
+degs <- degs[!grepl('MT-', degs$gene),]
+
+# lowest non-zero value
+lowest <- degs %>% subset(p_val_adj != 0) %>% top_n(-1, wt=p_val_adj) %>% .$p_val_adj
+degs$p_val_adj <- ifelse(degs$p_val_adj == 0, lowest, degs$p_val_adj)
+
+nlabel <- 5
+
+# label the top and bottom significant genes by log fold change
+cur_degs <- Reduce(rbind, lapply(unique(degs$Age), function(x){
+  cur <- subset(degs, Age == x)
+
+  top_thresh <- cur %>% subset(p_val_adj <= 0.05 & avg_log2FC > 0) %>% top_n(nlabel, wt=avg_log2FC) %>% .$avg_log2FC %>% min
+  bottom_thresh <- cur %>% subset(p_val_adj <= 0.05 & avg_log2FC < 0) %>% top_n(-1*nlabel, wt=avg_log2FC) %>% .$avg_log2FC %>% max
+
+  cur$anno <- ifelse(cur$p_val_adj <= 0.05 & cur$avg_log2FC >= top_thresh, cur$gene, NA)
+  cur$anno <- ifelse(cur$p_val_adj <= 0.05 & cur$avg_log2FC <= bottom_thresh, cur$gene, cur$anno)
+  cur$color <- ifelse(cur$p_val_adj > 0.05, 'gray', ifelse(cur$avg_log2FC > 0, 'hotpink', 'dodgerblue'))
+  cur
+}))
+
+groups <- unique(degs$Age)
+#groups <- group_levels[group_levels %in% groups]
+plot_list <- list()
+for(cluster  in groups){
+
+
+  print(cluster)
+  plot_degs <- cur_degs %>% subset(Age == cluster)
+
+  p <- plot_degs  %>%
+     ggplot(aes(x=avg_log2FC, y=-log10(p_val_adj))) +
+     geom_hline(yintercept=-log10(0.05), linetype='dashed')
+
+  # plot genes that are Nr4a2 targets
+  p <- p + ggrastr::rasterise(geom_point(
+    alpha=0.5,
+    color=plot_degs %>% .$color
+  ), dpi=500)
+
+  p <- p +
+     geom_point(
+       inherit.aes=FALSE,
+       data=subset(plot_degs, !is.na(anno)),
+       aes(avg_log2FC, -log10(p_val_adj)),
+       fill=subset(plot_degs, !is.na(anno)) %>% .$color,
+       shape=21, size=3, color='black'
+     ) +
+     geom_text_repel(aes(label=anno), color='black', fontface='italic',  min.segment.length=0, max.overlaps=Inf) +
+     xlim(-1*max(abs(plot_degs$avg_log2FC))-0.1, max(abs(plot_degs$avg_log2FC))+0.1) +
+     ggtitle(paste0(cluster)) +
+     xlab(bquote("Average log"[2]~"(Fold Change)")) +
+     ylab(bquote("-log"[10]~"(Adj. P-value)")) +
+     theme(
+       panel.border = element_rect(color='black', fill=NA, size=1),
+       panel.grid.major = element_blank(),
+       axis.line = element_blank(),
+       plot.title = element_text(hjust = 0.5),
+       legend.position='bottom'
+     )
+
+    plot_list[[cluster]] <- p
+
+}
+
+
+# plot_list <- lapply(plot_list, function(x){
+#   x + theme(
+#     axis.title.x = element_blank(),
+#     axis.title.y = element_blank(),
+#     plot.margin = margin(0,0,0,0),
+#     plot.title = element_text(vjust=-0.2)
+#   )
+# })
+
+pdf(paste0(fig_dir, 'test_sex_volcano2.pdf'), width=10, height=5, useDingbats=FALSE)
+wrap_plots(plot_list, ncol=2)
+dev.off()
+
+
+
+
+
+
+
+```
+
+
+
+

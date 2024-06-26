@@ -1,0 +1,64 @@
+```{r eval=FALSE}
+# conda activate cicero
+library(SeuratDisk)
+NucSeq.mouse <- readRDS("~/swaruplab/smorabit/analysis/AD_NucSeq_2019/batch_correction/liger/update/mouse_integration/data/zhou_5xFAD_ProcessedSeuratFinal.rds")
+
+NucSeq.mouse$Cell.Types <- as.character(NucSeq.mouse$Cell.Types)
+
+SaveH5Seurat(NucSeq.mouse, '~/swaruplab/smorabit/analysis/AD_NucSeq_2019/batch_correction/liger/update/mouse_integration/data/zhou_5xFAD_ProcessedSeuratFinal.h5Seurat', overwrite=TRUE)
+Convert("~/swaruplab/smorabit/analysis/AD_NucSeq_2019/batch_correction/liger/update/mouse_integration/data/zhou_5xFAD_ProcessedSeuratFinal.h5Seurat", dest = "h5ad", overwrite=TRUE)
+
+
+# write components separately
+
+# save data matrix:
+X <- GetAssayData(NucSeq.mouse, assay='RNA', slot='counts')
+Matrix::writeMM(X, file=paste0('data/zhou_counts.mtx'))
+
+# save gene names:
+write.table(
+  data.frame('gene'=rownames(X)),
+  file=paste0('data/zhou_gene_names.csv'),
+  quote=F,
+  row.names=F,
+  col.names=F
+)
+
+# save metadata:
+meta <- NucSeq.mouse@meta.data
+meta$barcode <- colnames(NucSeq.mouse)
+meta$UMAP1 <- NucSeq.mouse@reductions$umap@cell.embeddings[,1]
+meta$UMAP2 <- NucSeq.mouse@reductions$umap@cell.embeddings[,2]
+
+write.csv(meta, file=paste0('data/zhou_meta.csv'), quote=F, row.names=F)
+
+
+
+```
+
+
+```{r eval=FALSE}
+
+library(Seurat)
+library(tidyverse)
+library(future)
+
+# set up parallelization
+plan('multiprocess', workers=8)
+
+
+setwd('~/swaruplab/smorabit/analysis/ADDS_2021/visium/5xFAD/test_tangram/')
+NucSeq.mouse <- readRDS("~/swaruplab/smorabit/analysis/AD_NucSeq_2019/batch_correction/liger/update/mouse_integration/data/zhou_5xFAD_ProcessedSeuratFinal.rds")
+
+# marker genes for cell-types:
+Idents(NucSeq.mouse) <- NucSeq.mouse$Cell.Type
+markers <- FindAllMarkers(
+  NucSeq.mouse,
+  test.use = 'MAST',
+  min.pct = 0.25,
+  logfc.threshold = 0.75,
+  only.pos = TRUE
+)
+write.csv(markers, quote=FALSE, row.names=FALSE, file='data/zhou_marker_genes.csv')
+
+```
