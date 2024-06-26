@@ -10,7 +10,8 @@ TODO: Add a brief intro
 
 ## TODO:
 
-* Clean up all un-used code 
+* Clean up all notebooks
+* Remove all unused code
 * Provide basic comments in all scripts
 * In each README section, write a short para or few sentences about the analysis.
 
@@ -63,7 +64,7 @@ Additional plotting
 
 ## Differential expression analysis (Figs. 2 and 4)
 
-NoteL:Need to find from Emily's codebase:
+Note:Need to find from Emily's codebase:
 
 * Human ST marker genes 
 * Human ST condition 
@@ -71,9 +72,11 @@ NoteL:Need to find from Emily's codebase:
 
 All snRNA-seq DEG scripts are there
 
+Make a separate script for the Pseudobulk comparisons that we used for the peer review doc?
+
 ### snRNA-seq differential expression 
 
-TODO: Split the Sex analysis by snRNA vs ST ?
+TODO: Split the Sex analysis script by snRNA vs ST ?
 
 * [Marker genes](snRNA/differential_expression/markers/)
 * [Disease vs Control DEG scripts](snRNA/differential_expression/condition/)
@@ -117,7 +120,21 @@ Mouse dataset
 
 ## Predicting spatial coordinates for snRNA-seq data (Extended Data Fig. 5)
 
+TODO: cleanup the .Rmd scripts
+
+* [Functions to run CellTrek in parallel for each snRNA-ST pair](snRNA/predict_spatial_coords/celltrek_parallel.R)
+* [Running CellTrek in parallel for each snRNA-ST pair](snRNA/predict_spatial_coords/cellrtrek_parallel_run.sub)
+* [Downstream plotting script pt. 1](snRNA/predict_spatial_coords/cellrtrek_downsrtream_plotting.Rmd)
+* [Downstream plotting script pt. 2](snRNA/predict_spatial_coords/spatial_mapping_celltrek.Rmd)
+
+
 ## Cell-cell communication (CCC) network analysis (Fig. 6)
+
+* [Cell-cell-communication network analysis with CellChat](snRNA/cell_cell_communication/spatial_cellchat.Rmd)
+* [Cell-cell-communication network analysis with LIANA and comparing with CellChat](snRNA/cell_cell_communication/LIANA_ccc.Rmd)
 
 ## Amyloid-associated gene expression signatures (Fig. 7)
 
+* [Integration of amyloid imaging with ST datasets](spatial/amyloid/splitseq_human_amyloid.Rmd)
+* [Human amyloid analysis](spatial/amyloid/voyager_gene_signatures_human.Rmd)
+* [Mouse amyloid analysis](spatial/amyloid/voyager_gene_signatures_5x.Rmd)
