@@ -53,19 +53,7 @@ Additional plotting
 
 ## Differential expression analysis (Figs. 2 and 4)
 
-Note:Need to find from Emily's codebase:
-
-* Human ST marker genes 
-* Human ST condition 
-* Mouse ST marker genes (?)
-
-All snRNA-seq DEG scripts are there
-
-Make a separate script for the Pseudobulk comparisons that we used for the peer review doc?
-
 ### snRNA-seq differential expression 
-
-TODO: Split the Sex analysis script by snRNA vs ST ?
 
 * [Marker genes](snRNA/differential_expression/markers/)
 * [Disease vs Control DEG scripts](snRNA/differential_expression/condition/)
