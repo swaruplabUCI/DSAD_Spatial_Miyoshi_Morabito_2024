@@ -1,25 +1,14 @@
-# ADDS_paper
+# Spatial and single-nucleus transcriptomic analysis of genetic and sporadic forms of Alzheimer’s disease
 
-Miyoshi & Morabito et al. 2024 (Nature Genetics, in press)
+[Miyoshi & Morabito et al. 2024 (Nature Genetics)](https://www.nature.com/articles/s41588-024-01961-x)
 
-This repository contains the code used for data processing and analysis in our 
-manuscript titled "Spatial and single-nucleus trancsriptomic analysis of 
-genetic and sporadic forms of Alzheimer's disease".
+*The pathogenesis of Alzheimer’s disease (AD) depends on environmental and heritable factors, with its molecular etiology still unclear. Here we present a spatial transcriptomic (ST) and single-nucleus transcriptomic survey of late-onset sporadic AD and AD in Down syndrome (DSAD). Studying DSAD provides an opportunity to enhance our understanding of the AD transcriptome, potentially bridging the gap between genetic mouse models and sporadic AD. We identified transcriptomic changes that may underlie cortical layer-preferential pathology accumulation. Spatial co-expression network analyses revealed transient and regionally restricted disease processes, including a glial inflammatory program dysregulated in upper cortical layers and implicated in AD genetic risk and amyloid-associated processes. Cell–cell communication analysis further contextualized this gene program in dysregulated signaling networks. Finally, we generated ST data from an amyloid AD mouse model to identify cross-species amyloid-proximal transcriptomic changes with conformational context.*
 
-TODO: Add a brief intro 
-
-## TODO:
-
-* Clean up all notebooks
-* Remove all unused code
-* Provide basic comments in all scripts
-* In each README section, write a short para or few sentences about the analysis.
+**This repository contains the code used for data processing and analysis in our manuscript, and is generally organized in sync with the presentation of the data in the corresponding paper.** 
 
 ## Data generated in this study
 
-The raw and processed ST (10X Genomics Visium) and snRNA-seq
-(Parse Biosciences) datasets have been deposited on the NCBI 
-Gene Expression Omnibus (GEO) at accession number XXXXXX.
+The raw and processed ST (10X Genomics Visium) and snRNA-seq(Parse Biosciences) datasets have been deposited on the NCBI Gene Expression Omnibus (GEO) at accession number [GSE233208](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE233208). Please contact the corresponding author of the paper (Vivek Swarup) with any queries related to the dataset.
 
 ## Processing sequencing data and quantifying gene expression
 
@@ -120,8 +109,6 @@ Mouse dataset
 
 ## Predicting spatial coordinates for snRNA-seq data (Extended Data Fig. 5)
 
-TODO: cleanup the .Rmd scripts
-
 * [Functions to run CellTrek in parallel for each snRNA-ST pair](snRNA/predict_spatial_coords/celltrek_parallel.R)
 * [Running CellTrek in parallel for each snRNA-ST pair](snRNA/predict_spatial_coords/cellrtrek_parallel_run.sub)
 * [Downstream plotting script pt. 1](snRNA/predict_spatial_coords/cellrtrek_downsrtream_plotting.Rmd)
@@ -138,3 +125,6 @@ TODO: cleanup the .Rmd scripts
 * [Integration of amyloid imaging with ST datasets](spatial/amyloid/splitseq_human_amyloid.Rmd)
 * [Human amyloid analysis](spatial/amyloid/voyager_gene_signatures_human.Rmd)
 * [Mouse amyloid analysis](spatial/amyloid/voyager_gene_signatures_5x.Rmd)
+
+## TODO:
+* Clean up code and analyis that we did which did not end up included in the paper.
