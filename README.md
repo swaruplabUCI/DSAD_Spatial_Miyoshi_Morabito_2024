@@ -77,12 +77,12 @@ Mouse dataset
 * [Female vs Male plotting and downstream analysis](spatial/differential_expression/mouse/sex_DEGs_mouse_ST.Rmd)
 
 
-## hdWGCNA co-expression network analysis (Fig. 3)
+## hdWGCNA co-expression network analysis (Fig. 3, Extended Data Fig. 9)
 
 * [hdWGCNA in human ST](spatial/hdWGCNA/hdWGCNA_human.Rmd)
 * [hdWGCNA in mouse ST](spatial/hdWGCNA/hdWGCNA_mouse.Rmd)
 
-## Spatial and single-nucleus genetic enrichment analysis (Fig. 3, XXX)
+## Spatial and single-nucleus genetic enrichment analysis (Fig. 3, Extended Data Fig. 4)
 
 * [Run scDRS in human snRNA datasets](snRNA/genetic_enrichment/run_scDRS/)
 * [Plotting and downstream analysis of scDRS results in snRNA](snRNA/genetic_enrichment/scDRS_results_plotting.Rmd)
