@@ -10,6 +10,50 @@
 
 The raw and processed ST (10X Genomics Visium) and snRNA-seq(Parse Biosciences) datasets have been deposited on the NCBI Gene Expression Omnibus (GEO) at accession number [GSE233208](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE233208). Please contact the corresponding author of the paper (Vivek Swarup) with any queries related to the dataset.
 
+***IMPORTANT NOTE***
+
+There is an issue regarding the patient meta-data in the processed human visium dataset uploaded to GEO (GSE233208_Human_visium_ADDS_seurat_processed.rds). The correct patient meta-data can be found in Supplementary Table 1 of the paper. Here we show how to correct the meta-data in the Seurat object. We plan to update the GEO entry to fix the problem as soon as possible.
+
+First, download  GSE233208_Human_visium_ADDS_seurat_processed.rds.gz, and `gunzip` the file. Second, save just the patient meta-data table from Supplementary Table 1 as a separate tab-delimited file. Then follow the R code below.
+
+```r
+
+library(Seruat)
+library(tidyverse)
+library(magrittr)
+
+# load the seurat object
+seurat_obj <- readRDS('GSE233208_Human_visium_ADDS_seurat_processed.rds')
+
+# load the patient meta-data table from Supplementary Table 1
+meta_df <- read.delim("adds_patient_data.txt", sep='\t', header=1) %>%
+    dplyr::rename( Sample = Seq.ID)
+
+# identify the common columns between the seurat object and the meta_df,
+# and remove them from the seurat object
+common_cols <- intersect(colnames(seurat_obj@meta.data), colnames(meta_df))
+common_cols <- common_cols[common_cols != 'Sample'] # keep this one for the join operation
+seurat_obj@meta.data %<>% select(-all_of(common_cols))
+
+# join the two tables based on the Sample name to create an updated meta-data table
+updated_meta <- dplyr::left_join(
+    seurat_obj@meta.data, 
+    meta_df, 
+    by = 'Sample'
+)
+seurat_obj@meta.data <- updated_meta
+
+# check the updated Diagnosis column to see if the numbers in each group are correct
+patient_meta <- seurat_obj@meta.data %>%
+    select(c(Sample, Diagnosis)) %>% distinct()
+table(patient_meta$Diagnosis)
+```
+
+```
+ AD   AD_DS Control earlyAD 
+ 10      10      10       9 
+```
+
 ## Processing sequencing data and quantifying gene expression
 
 * [Parse Biosciences snRNA-seq preprocessing scripts](snRNA/preprocessing/)
